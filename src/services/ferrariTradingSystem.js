@@ -350,6 +350,12 @@ class FerrariTradingSystem extends EventEmitter {
     // Combine timeframe signals
     const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
     
+    // Return null if no valid analysis
+    if (!combinedAnalysis) {
+      console.log(`⚠️ No valid analysis data for ${symbol}`);
+      return null;
+    }
+    
     // Add market context
     combinedAnalysis.marketContext = await this.getMarketContext();
     
