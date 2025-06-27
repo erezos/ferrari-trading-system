@@ -476,6 +476,66 @@ class FerrariTradingSystem extends EventEmitter {
     };
   }
 
+  async getVIXLevel() {
+    try {
+      // Try to get VIX data from price cache first
+      const vixData = this.state.priceCache.get('VIX');
+      if (vixData && vixData.price) {
+        const vixLevel = vixData.price;
+        return {
+          level: vixLevel < 15 ? 'low' : vixLevel > 25 ? 'high' : 'medium',
+          value: vixLevel
+        };
+      }
+      
+      // Fallback: estimate volatility from SPY price movements
+      const spyData = this.state.priceCache.get('SPY');
+      if (spyData && spyData.priceHistory && spyData.priceHistory.length > 5) {
+        const prices = spyData.priceHistory.slice(-10);
+        const volatility = this.calculateVolatility(prices);
+        return {
+          level: volatility < 0.01 ? 'low' : volatility > 0.02 ? 'high' : 'medium',
+          value: volatility * 100
+        };
+      }
+      
+      // Default fallback
+      return { level: 'medium', value: 20 };
+    } catch (error) {
+      console.log('⚠️ VIX level estimation failed, using default');
+      return { level: 'medium', value: 20 };
+    }
+  }
+
+  calculateVolatility(prices) {
+    if (prices.length < 2) return 0.015; // Default medium volatility
+    
+    const returns = [];
+    for (let i = 1; i < prices.length; i++) {
+      returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+    }
+    
+    const mean = returns.reduce((sum, ret) => sum + ret, 0) / returns.length;
+    const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - mean, 2), 0) / returns.length;
+    
+    return Math.sqrt(variance);
+  }
+
+  determineMarketTrend(spyData) {
+    if (!spyData || !spyData.priceHistory || spyData.priceHistory.length < 3) {
+      return 'neutral';
+    }
+    
+    const prices = spyData.priceHistory.slice(-5);
+    const first = prices[0];
+    const last = prices[prices.length - 1];
+    const change = (last - first) / first;
+    
+    if (change > 0.005) return 'bullish';
+    if (change < -0.005) return 'bearish';
+    return 'neutral';
+  }
+
   calculateFinalStrength(analysis) {
     let finalStrength = analysis.strength;
     
