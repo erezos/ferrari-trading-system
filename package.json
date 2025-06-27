@@ -1,0 +1,32 @@
+{
+  "name": "ferrari-trading-system",
+  "version": "1.0.0",
+  "description": "Real-time trading signals system with Ferrari performance",
+  "main": "ferrari_start.js",
+  "scripts": {
+    "start": "node ferrari_start.js",
+    "dev": "node ferrari_start.js",
+    "test": "node test_ferrari.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "firebase-admin": "^11.10.1",
+    "ws": "^8.13.0",
+    "node-fetch": "^2.6.12",
+    "axios": "^1.4.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "trading",
+    "real-time",
+    "stocks",
+    "crypto",
+    "firebase"
+  ],
+  "author": "TradingTipGenerator",
+  "license": "MIT"
+}
