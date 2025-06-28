@@ -13,11 +13,11 @@
  * This is the "Ferrari" - fast, precise, and exclusive.
  */
 
-const EventEmitter = require('events');
-const { admin, db, messaging, isInitialized } = require('../config/firebase');
+import { EventEmitter } from 'events';
+import WebSocket from 'ws';
 
-class FerrariTradingSystem extends EventEmitter {
-  constructor() {
+export class FerrariTradingSystem extends EventEmitter {
+  constructor(firebaseServices = null) {
     super();
     
     // Core system configuration
@@ -87,18 +87,24 @@ class FerrariTradingSystem extends EventEmitter {
         winRate: 0,
         avgReturn: 0
       },
-      systemCounters: null
+      // Resource tracking for graceful shutdown
+      websockets: new Set(),
+      intervals: new Set(),
+      timeouts: new Set(),
+      isShuttingDown: false
     };
     
-    // Use Firebase services from our configured module
-    this.db = db;
-    this.messaging = messaging;
-    this.firebaseReady = isInitialized;
-    
-    if (!this.firebaseReady) {
-      console.warn('⚠️ Firebase not configured - running in test mode');
+    // Initialize Firebase services
+    if (firebaseServices && firebaseServices.isReady) {
+      this.db = firebaseServices.db;
+      this.messaging = firebaseServices.messaging;
+      this.firebaseReady = true;
+      console.log('🔥 Ferrari system using Firebase services');
     } else {
-      console.log('✅ Firebase services ready for Ferrari system');
+      console.log('⚠️ Ferrari system running in test mode - Firebase disabled');
+      this.db = null;
+      this.messaging = null;
+      this.firebaseReady = false;
     }
   }
 
@@ -158,8 +164,10 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectAlpacaFeed(symbols) {
-    const WebSocket = require('ws');
     const ws = new WebSocket('wss://stream.data.alpaca.markets/v2/iex');
+    
+    // Track WebSocket for graceful shutdown
+    this.state.websockets.add(ws);
     
     ws.on('open', () => {
       console.log('🟢 Alpaca feed connected');
@@ -172,27 +180,41 @@ class FerrariTradingSystem extends EventEmitter {
       }));
       
       // Subscribe to all stocks
-      setTimeout(() => {
-        ws.send(JSON.stringify({
-          action: 'subscribe',
-          trades: symbols,
-          quotes: symbols,
-          bars: symbols
-        }));
+      const subscribeTimeout = setTimeout(() => {
+        if (!this.state.isShuttingDown) {
+          ws.send(JSON.stringify({
+            action: 'subscribe',
+            trades: symbols,
+            quotes: symbols,
+            bars: symbols
+          }));
+        }
       }, 1000);
+      
+      this.state.timeouts.add(subscribeTimeout);
     });
 
     ws.on('message', (data) => {
-      const messages = JSON.parse(data);
-      messages.forEach(msg => this.processAlpacaMessage(msg));
+      if (!this.state.isShuttingDown) {
+        const messages = JSON.parse(data);
+        messages.forEach(msg => this.processAlpacaMessage(msg));
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('🔴 Alpaca feed disconnected');
+      this.state.websockets.delete(ws);
+    });
+
+    ws.on('error', (error) => {
+      console.error('❌ Alpaca feed error:', error);
+      this.state.websockets.delete(ws);
     });
 
     return ws;
   }
 
   async connectBinanceFeed(cryptoSymbols) {
-    const WebSocket = require('ws');
-    
     // Convert crypto symbols to Binance format
     const binanceSymbols = cryptoSymbols.map(s => s.replace('/', '').toLowerCase());
     
@@ -213,7 +235,6 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectFinnhubFeed(symbols) {
-    const WebSocket = require('ws');
     const ws = new WebSocket(`wss://ws.finnhub.io?token=${process.env.FINNHUB_API_KEY}`);
     
     ws.on('open', () => {
@@ -350,12 +371,6 @@ class FerrariTradingSystem extends EventEmitter {
     // Combine timeframe signals
     const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
     
-    // Return null if no valid analysis
-    if (!combinedAnalysis) {
-      console.log(`⚠️ No valid analysis data for ${symbol}`);
-      return null;
-    }
-    
     // Add market context
     combinedAnalysis.marketContext = await this.getMarketContext();
     
@@ -482,66 +497,6 @@ class FerrariTradingSystem extends EventEmitter {
     };
   }
 
-  async getVIXLevel() {
-    try {
-      // Try to get VIX data from price cache first
-      const vixData = this.state.priceCache.get('VIX');
-      if (vixData && vixData.price) {
-        const vixLevel = vixData.price;
-        return {
-          level: vixLevel < 15 ? 'low' : vixLevel > 25 ? 'high' : 'medium',
-          value: vixLevel
-        };
-      }
-      
-      // Fallback: estimate volatility from SPY price movements
-      const spyData = this.state.priceCache.get('SPY');
-      if (spyData && spyData.priceHistory && spyData.priceHistory.length > 5) {
-        const prices = spyData.priceHistory.slice(-10);
-        const volatility = this.calculateVolatility(prices);
-        return {
-          level: volatility < 0.01 ? 'low' : volatility > 0.02 ? 'high' : 'medium',
-          value: volatility * 100
-        };
-      }
-      
-      // Default fallback
-      return { level: 'medium', value: 20 };
-    } catch (error) {
-      console.log('⚠️ VIX level estimation failed, using default');
-      return { level: 'medium', value: 20 };
-    }
-  }
-
-  calculateVolatility(prices) {
-    if (prices.length < 2) return 0.015; // Default medium volatility
-    
-    const returns = [];
-    for (let i = 1; i < prices.length; i++) {
-      returns.push((prices[i] - prices[i-1]) / prices[i-1]);
-    }
-    
-    const mean = returns.reduce((sum, ret) => sum + ret, 0) / returns.length;
-    const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - mean, 2), 0) / returns.length;
-    
-    return Math.sqrt(variance);
-  }
-
-  determineMarketTrend(spyData) {
-    if (!spyData || !spyData.priceHistory || spyData.priceHistory.length < 3) {
-      return 'neutral';
-    }
-    
-    const prices = spyData.priceHistory.slice(-5);
-    const first = prices[0];
-    const last = prices[prices.length - 1];
-    const change = (last - first) / first;
-    
-    if (change > 0.005) return 'bullish';
-    if (change < -0.005) return 'bearish';
-    return 'neutral';
-  }
-
   calculateFinalStrength(analysis) {
     let finalStrength = analysis.strength;
     
@@ -592,9 +547,11 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   async generateSignal(analysis) {
-    // Check system-wide rate limits before generating
-    if (!this.canSystemGenerateSignal()) {
-      console.log(`⚠️ System rate limit reached for ${analysis.symbol} signal`);
+    // Check user rate limits before generating
+    const eligibleUsers = await this.getEligibleUsers(analysis);
+    
+    if (eligibleUsers.length === 0) {
+      console.log(`⚠️ No eligible users for ${analysis.symbol} signal (rate limits)`);
       return;
     }
     
@@ -605,33 +562,15 @@ class FerrariTradingSystem extends EventEmitter {
     const tipId = await this.saveTip(tip);
     
     if (tipId) {
-      // Send to all users via topic
-      await this.sendToAllUsers(tip);
+      // Send to eligible users only
+      await this.sendToEligibleUsers(tip, eligibleUsers);
       
-      console.log(`✅ Ferrari signal delivered: ${analysis.symbol} ${tip.sentiment} (${tip.strength.toFixed(1)}/5)`);
+      // Update user limits
+      await this.updateUserLimits(eligibleUsers, tip);
+      
+      console.log(`✅ Premium signal delivered: ${analysis.symbol} to ${eligibleUsers.length} users`);
       this.state.performanceMetrics.signalsDelivered++;
     }
-  }
-
-  canSystemGenerateSignal() {
-    if (!this.state.systemCounters) {
-      return true; // First signal of the day
-    }
-    
-    const counters = this.state.systemCounters;
-    const config = this.config.rateLimiting;
-    
-    // Check daily limit (5 signals per day)
-    if (counters.dailyCount >= config.maxDailyTips) {
-      return false;
-    }
-    
-    // Check hourly limit (2 signals per hour)
-    if (counters.hourlyCount >= config.maxHourlyTips) {
-      return false;
-    }
-    
-    return true;
   }
 
   async getEligibleUsers(analysis) {
@@ -697,9 +636,6 @@ class FerrariTradingSystem extends EventEmitter {
     // Determine timeframe based on strength and market conditions
     const timeframe = this.determineTimeframe(analysis);
     
-    // Enhance company data with logo and business info
-    const companyData = this.enhanceCompanyData(analysis.symbol);
-    
     return {
       symbol: analysis.symbol,
       timeframe: timeframe, // Mobile app compatibility
@@ -721,7 +657,7 @@ class FerrariTradingSystem extends EventEmitter {
       
       // Mobile app required fields
       createdAt: new Date(),
-      images: {}, // Empty - no image generation needed
+      images: {}, // Will be populated by image generation service
       
       // Analysis data structure for mobile app
       analysis: {
@@ -733,8 +669,15 @@ class FerrariTradingSystem extends EventEmitter {
         reasoning: analysis.reasoning
       },
       
-      // Enhanced company data
-      company: companyData,
+      // Company data (will be populated from logo service)
+      company: {
+        name: analysis.symbol, // Will be enhanced
+        symbol: analysis.symbol,
+        logoUrl: '', // Will be populated
+        sector: '',
+        business: '',
+        isCrypto: analysis.symbol.includes('/')
+      },
       
       // Metadata
       system: 'ferrari_v1',
@@ -785,37 +728,43 @@ class FerrariTradingSystem extends EventEmitter {
 
   startSignalEngine() {
     // Process signals every 10 seconds
-    setInterval(() => {
-      this.processSignalQueue();
+    const signalInterval = setInterval(() => {
+      if (!this.state.isShuttingDown) {
+        this.processSignalQueue();
+      }
     }, 10000);
+    
+    this.state.intervals.add(signalInterval);
   }
 
   startRateLimitManager() {
-    // Prevent multiple rate limit managers
-    if (this.rateLimitManagerStarted) return;
-    this.rateLimitManagerStarted = true;
-    
     // Reset hourly limits every hour
     const hourlyInterval = setInterval(() => {
-      this.resetHourlyLimits();
+      if (!this.state.isShuttingDown) {
+        this.resetHourlyLimits();
+      }
     }, 3600000); // 1 hour
     
     // Reset daily limits at midnight
     const dailyInterval = setInterval(() => {
-      this.resetDailyLimits();
+      if (!this.state.isShuttingDown) {
+        this.resetDailyLimits();
+      }
     }, 86400000); // 24 hours
     
-    // Store intervals for cleanup
-    if (!this.state.intervals) this.state.intervals = new Set();
     this.state.intervals.add(hourlyInterval);
     this.state.intervals.add(dailyInterval);
   }
 
   startPerformanceTracking() {
     // Track performance every 5 minutes
-    setInterval(() => {
-      this.updatePerformanceMetrics();
+    const performanceInterval = setInterval(() => {
+      if (!this.state.isShuttingDown) {
+        this.updatePerformanceMetrics();
+      }
     }, 300000);
+    
+    this.state.intervals.add(performanceInterval);
   }
 
   getTotalSymbols() {
@@ -851,141 +800,19 @@ class FerrariTradingSystem extends EventEmitter {
     }
     
     try {
-      // Save only to existing trading_tips collection (backward compatibility)
-      const docRef = await this.db.collection('trading_tips').add({
-        ...tip,
-        isFerrariSignal: true,
-        source: 'ferrari_v1'
-      });
+      const docRef = await this.db.collection('ferrari_tips').add(tip);
       
-      // Update system-wide tip counters
-      await this.updateSystemTipCounters();
+      // Also save to regular collection for app compatibility
+      await this.db.collection('trading_tips').add({
+        ...tip,
+        isFerrariSignal: true
+      });
       
       return docRef.id;
     } catch (error) {
       console.error('❌ Error saving Ferrari tip:', error);
       return null;
     }
-  }
-
-  async updateSystemTipCounters() {
-    const now = new Date();
-    const today = now.toDateString();
-    const currentHour = now.getHours();
-    
-    // Get or create system counters
-    if (!this.state.systemCounters) {
-      this.state.systemCounters = {
-        dailyCount: 0,
-        hourlyCount: 0,
-        lastReset: today,
-        lastHourReset: currentHour
-      };
-    }
-    
-    const counters = this.state.systemCounters;
-    
-    // Reset daily counter if new day
-    if (counters.lastReset !== today) {
-      counters.dailyCount = 0;
-      counters.lastReset = today;
-    }
-    
-    // Reset hourly counter if new hour
-    if (counters.lastHourReset !== currentHour) {
-      counters.hourlyCount = 0;
-      counters.lastHourReset = currentHour;
-    }
-    
-    // Increment counters
-    counters.dailyCount++;
-    counters.hourlyCount++;
-    
-    console.log(`📊 System counters: ${counters.dailyCount} today, ${counters.hourlyCount} this hour`);
-  }
-
-  async sendToAllUsers(tip) {
-    if (!this.firebaseReady) {
-      console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to all users');
-      return;
-    }
-    
-    try {
-      // Create deep link based on timeframe
-      const deepLink = this.createDeepLink(tip.timeframe);
-      
-      const message = {
-        title: `🏎️ Ferrari Signal: ${tip.symbol}`,
-        body: `${tip.sentiment.toUpperCase()} at $${tip.entryPrice.toFixed(2)} | Strength: ${tip.strength.toFixed(1)}/5`,
-        data: {
-          symbol: tip.symbol,
-          sentiment: tip.sentiment,
-          entryPrice: tip.entryPrice.toString(),
-          takeProfit: tip.takeProfit.toString(),
-          stopLoss: tip.stopLoss.toString(),
-          strength: tip.strength.toString(),
-          timeframe: tip.timeframe,
-          type: 'trading_tip',
-          trackingId: tip.trackingId,
-          timestamp: tip.timestamp,
-          deepLink: deepLink,
-          screen: this.getTargetScreen(tip.timeframe),
-          isFerrariSignal: 'true',
-          target_timeframe: tip.timeframe,
-          route: '/trading_tip',
-          click_action: 'FLUTTER_NOTIFICATION_CLICK'
-        }
-      };
-
-      // Send to topic (all app users)
-      await this.messaging.send({
-        topic: 'trading_tips',
-        notification: {
-          title: message.title,
-          body: message.body
-        },
-        data: message.data,
-        android: {
-          notification: {
-            clickAction: deepLink,
-            channelId: 'trading_tips'
-          }
-        },
-        apns: {
-          payload: {
-            aps: {
-              category: 'TRADING_TIP',
-              'url-args': [tip.timeframe]
-            }
-          }
-        }
-      });
-      
-      console.log(`✅ Ferrari notification sent to all users: ${tip.symbol} ${tip.sentiment}`);
-      
-    } catch (error) {
-      console.error('❌ Error sending Ferrari notifications:', error);
-    }
-  }
-
-  createDeepLink(timeframe) {
-    // Create deep links for navigation
-    const deepLinks = {
-      'short_term': 'tipsync://short-term',
-      'mid_term': 'tipsync://mid-term', 
-      'long_term': 'tipsync://long-term'
-    };
-    return deepLinks[timeframe] || 'tipsync://home';
-  }
-
-  getTargetScreen(timeframe) {
-    // Screen names for Flutter navigation
-    const screens = {
-      'short_term': 'ShortTermScreen',
-      'mid_term': 'MidTermScreen',
-      'long_term': 'LongTermScreen'
-    };
-    return screens[timeframe] || 'HomeScreen';
   }
 
   async sendToEligibleUsers(tip, eligibleUsers) {
@@ -1051,12 +878,6 @@ class FerrariTradingSystem extends EventEmitter {
       symbolsMonitored: this.getTotalSymbols(),
       performanceMetrics: this.state.performanceMetrics,
       rateLimiting: this.config.rateLimiting,
-      systemCounters: this.state.systemCounters || {
-        dailyCount: 0,
-        hourlyCount: 0,
-        lastReset: new Date().toDateString(),
-        lastHourReset: new Date().getHours()
-      },
       uptime: process.uptime()
     };
   }
@@ -1064,27 +885,57 @@ class FerrariTradingSystem extends EventEmitter {
   async shutdown() {
     try {
       console.log('🛑 Shutting down Ferrari Trading System...');
+      this.state.isShuttingDown = true;
       
-      // Close all WebSocket connections
-      if (this.state.websockets) {
-        this.state.websockets.forEach(ws => {
+      // Stop accepting new signals
+      console.log('📵 Stopping signal processing...');
+      
+      // Close all WebSocket connections gracefully
+      console.log('🔌 Closing WebSocket connections...');
+      for (const ws of this.state.websockets) {
+        try {
           if (ws.readyState === 1) { // OPEN
-            ws.close();
+            ws.close(1000, 'Server shutdown'); // Normal closure
           }
-        });
+        } catch (error) {
+          console.warn('⚠️ Error closing WebSocket:', error.message);
+        }
       }
+      
+      // Wait for WebSockets to close (max 5 seconds)
+      await Promise.race([
+        new Promise(resolve => {
+          const checkClosed = () => {
+            const openSockets = Array.from(this.state.websockets).filter(ws => ws.readyState === 1);
+            if (openSockets.length === 0) {
+              resolve();
+            } else {
+              setTimeout(checkClosed, 100);
+            }
+          };
+          checkClosed();
+        }),
+        new Promise(resolve => setTimeout(resolve, 5000)) // 5 second timeout
+      ]);
       
       // Clear all intervals
-      if (this.state.intervals) {
-        this.state.intervals.forEach(interval => clearInterval(interval));
-        this.state.intervals.clear();
+      console.log('⏰ Clearing intervals...');
+      for (const interval of this.state.intervals) {
+        clearInterval(interval);
       }
+      this.state.intervals.clear();
       
       // Clear all timeouts
-      if (this.state.timeouts) {
-        this.state.timeouts.forEach(timeout => clearTimeout(timeout));
-        this.state.timeouts.clear();
+      console.log('⏱️ Clearing timeouts...');
+      for (const timeout of this.state.timeouts) {
+        clearTimeout(timeout);
       }
+      this.state.timeouts.clear();
+      
+      // Final cleanup
+      this.state.priceCache.clear();
+      this.state.signalHistory.clear();
+      this.state.connectedFeeds.clear();
       
       console.log('✅ Ferrari system shutdown complete');
       
@@ -1104,19 +955,18 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   resetHourlyLimits() {
-    console.log('🔄 Resetting system hourly rate limits');
-    if (this.state.systemCounters) {
-      this.state.systemCounters.hourlyCount = 0;
-      this.state.systemCounters.lastHourReset = new Date().getHours();
-    }
+    console.log('🔄 Resetting hourly rate limits');
+    this.state.userLimits.forEach(limits => {
+      limits.hourlyCount = 0;
+    });
   }
 
   resetDailyLimits() {
-    console.log('🔄 Resetting system daily rate limits');
-    if (this.state.systemCounters) {
-      this.state.systemCounters.dailyCount = 0;
-      this.state.systemCounters.lastReset = new Date().toDateString();
-    }
+    console.log('🔄 Resetting daily rate limits');
+    this.state.userLimits.forEach(limits => {
+      limits.dailyCount = 0;
+      limits.lastReset = new Date().toDateString();
+    });
   }
 
   updatePerformanceMetrics() {
@@ -1131,102 +981,7 @@ class FerrariTradingSystem extends EventEmitter {
     
     this.state.performanceMetrics = metrics;
   }
-
-  enhanceCompanyData(symbol) {
-    const isCrypto = symbol.includes('/');
-    
-    if (isCrypto) {
-      // Crypto pair handling
-      const [base, quote] = symbol.split('/');
-      return {
-        name: this.getCryptoName(base),
-        symbol: symbol,
-        logoUrl: `/logos/crypto/${base}.png`,
-        sector: 'Cryptocurrency',
-        business: `${this.getCryptoName(base)} digital currency`,
-        isCrypto: true,
-        baseAsset: base,
-        quoteAsset: quote
-      };
-    } else {
-      // Stock handling
-      return {
-        name: this.getCompanyName(symbol),
-        symbol: symbol,
-        logoUrl: `/logos/stocks/${symbol}.png`,
-        sector: this.getCompanySector(symbol),
-        business: this.getCompanyBusiness(symbol),
-        isCrypto: false
-      };
-    }
-  }
-
-  getCryptoName(symbol) {
-    const cryptoNames = {
-      'BTC': 'Bitcoin',
-      'ETH': 'Ethereum',
-      'ADA': 'Cardano',
-      'DOT': 'Polkadot',
-      'LINK': 'Chainlink',
-      'MATIC': 'Polygon',
-      'SOL': 'Solana',
-      'AVAX': 'Avalanche',
-      'ALGO': 'Algorand',
-      'ATOM': 'Cosmos'
-    };
-    return cryptoNames[symbol] || symbol;
-  }
-
-  getCompanyName(symbol) {
-    const companyNames = {
-      'AAPL': 'Apple Inc.',
-      'MSFT': 'Microsoft Corporation',
-      'GOOGL': 'Alphabet Inc.',
-      'AMZN': 'Amazon.com Inc.',
-      'TSLA': 'Tesla Inc.',
-      'NVDA': 'NVIDIA Corporation',
-      'META': 'Meta Platforms Inc.',
-      'NFLX': 'Netflix Inc.',
-      'AMD': 'Advanced Micro Devices',
-      'PLTR': 'Palantir Technologies',
-      'LCID': 'Lucid Group Inc.'
-    };
-    return companyNames[symbol] || `${symbol} Corporation`;
-  }
-
-  getCompanySector(symbol) {
-    const sectors = {
-      'AAPL': 'Technology',
-      'MSFT': 'Technology',
-      'GOOGL': 'Technology',
-      'AMZN': 'Consumer Discretionary',
-      'TSLA': 'Automotive',
-      'NVDA': 'Technology',
-      'META': 'Technology',
-      'NFLX': 'Entertainment',
-      'AMD': 'Technology',
-      'PLTR': 'Technology',
-      'LCID': 'Automotive'
-    };
-    return sectors[symbol] || 'Technology';
-  }
-
-  getCompanyBusiness(symbol) {
-    const businesses = {
-      'AAPL': 'Consumer electronics and software',
-      'MSFT': 'Cloud computing and software',
-      'GOOGL': 'Internet search and advertising',
-      'AMZN': 'E-commerce and cloud services',
-      'TSLA': 'Electric vehicles and energy',
-      'NVDA': 'Graphics processors and AI chips',
-      'META': 'Social media and virtual reality',
-      'NFLX': 'Streaming entertainment services',
-      'AMD': 'Computer processors and graphics',
-      'PLTR': 'Data analytics and software',
-      'LCID': 'Luxury electric vehicles'
-    };
-    return businesses[symbol] || 'Technology and innovation';
-  }
 }
 
-module.exports = new FerrariTradingSystem(); 
+// Export singleton instance
+export default new FerrariTradingSystem(); 
