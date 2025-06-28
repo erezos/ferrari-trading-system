@@ -15,6 +15,7 @@
 
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
+import LogoUtils from '../utils/logoUtils.js';
 
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
@@ -633,6 +634,9 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   createPremiumTip(analysis) {
+    // Get complete company information with logo and business data
+    const companyInfo = LogoUtils.getCompanyInfo(analysis.symbol);
+    
     // Determine timeframe based on strength and market conditions
     const timeframe = this.determineTimeframe(analysis);
     
@@ -669,14 +673,14 @@ export class FerrariTradingSystem extends EventEmitter {
         reasoning: analysis.reasoning
       },
       
-      // Company data (will be populated from logo service)
+      // Complete company data with logo and business info
       company: {
-        name: analysis.symbol, // Will be enhanced
+        name: companyInfo.name,
         symbol: analysis.symbol,
-        logoUrl: '', // Will be populated
-        sector: '',
-        business: '',
-        isCrypto: analysis.symbol.includes('/')
+        logoUrl: companyInfo.logoUrl,
+        sector: companyInfo.sector,
+        business: companyInfo.business,
+        isCrypto: companyInfo.isCrypto
       },
       
       // Metadata
