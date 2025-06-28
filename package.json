@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node ferrari_start.js",
     "dev": "node ferrari_start.js",
-    "test": "node test_ferrari.js"
+    "test": "node test_ferrari.js",
+    "railway": "node ferrari_start.js"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -18,7 +19,7 @@
     "dotenv": "^16.3.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "keywords": [
     "trading",
