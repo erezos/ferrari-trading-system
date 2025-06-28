@@ -14,7 +14,7 @@
  */
 
 const EventEmitter = require('events');
-const admin = require('firebase-admin');
+const { admin, db, messaging, isInitialized } = require('../config/firebase');
 
 class FerrariTradingSystem extends EventEmitter {
   constructor() {
@@ -90,16 +90,15 @@ class FerrariTradingSystem extends EventEmitter {
       systemCounters: null
     };
     
-    // Services (initialize only if Firebase is configured)
-    try {
-      this.db = admin.firestore();
-      this.messaging = admin.messaging();
-      this.firebaseReady = true;
-    } catch (error) {
+    // Use Firebase services from our configured module
+    this.db = db;
+    this.messaging = messaging;
+    this.firebaseReady = isInitialized;
+    
+    if (!this.firebaseReady) {
       console.warn('⚠️ Firebase not configured - running in test mode');
-      this.db = null;
-      this.messaging = null;
-      this.firebaseReady = false;
+    } else {
+      console.log('✅ Firebase services ready for Ferrari system');
     }
   }
 
