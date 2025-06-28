@@ -86,7 +86,8 @@ class FerrariTradingSystem extends EventEmitter {
         signalsDelivered: 0,
         winRate: 0,
         avgReturn: 0
-      }
+      },
+      systemCounters: null
     };
     
     // Services (initialize only if Firebase is configured)
@@ -592,11 +593,9 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   async generateSignal(analysis) {
-    // Check user rate limits before generating
-    const eligibleUsers = await this.getEligibleUsers(analysis);
-    
-    if (eligibleUsers.length === 0) {
-      console.log(`⚠️ No eligible users for ${analysis.symbol} signal (rate limits)`);
+    // Check system-wide rate limits before generating
+    if (!this.canSystemGenerateSignal()) {
+      console.log(`⚠️ System rate limit reached for ${analysis.symbol} signal`);
       return;
     }
     
@@ -607,15 +606,33 @@ class FerrariTradingSystem extends EventEmitter {
     const tipId = await this.saveTip(tip);
     
     if (tipId) {
-      // Send to eligible users only
-      await this.sendToEligibleUsers(tip, eligibleUsers);
+      // Send to all users via topic
+      await this.sendToAllUsers(tip);
       
-      // Update user limits
-      await this.updateUserLimits(eligibleUsers, tip);
-      
-      console.log(`✅ Premium signal delivered: ${analysis.symbol} to ${eligibleUsers.length} users`);
+      console.log(`✅ Ferrari signal delivered: ${analysis.symbol} ${tip.sentiment} (${tip.strength.toFixed(1)}/5)`);
       this.state.performanceMetrics.signalsDelivered++;
     }
+  }
+
+  canSystemGenerateSignal() {
+    if (!this.state.systemCounters) {
+      return true; // First signal of the day
+    }
+    
+    const counters = this.state.systemCounters;
+    const config = this.config.rateLimiting;
+    
+    // Check daily limit (5 signals per day)
+    if (counters.dailyCount >= config.maxDailyTips) {
+      return false;
+    }
+    
+    // Check hourly limit (2 signals per hour)
+    if (counters.hourlyCount >= config.maxHourlyTips) {
+      return false;
+    }
+    
+    return true;
   }
 
   async getEligibleUsers(analysis) {
@@ -681,6 +698,9 @@ class FerrariTradingSystem extends EventEmitter {
     // Determine timeframe based on strength and market conditions
     const timeframe = this.determineTimeframe(analysis);
     
+    // Enhance company data with logo and business info
+    const companyData = this.enhanceCompanyData(analysis.symbol);
+    
     return {
       symbol: analysis.symbol,
       timeframe: timeframe, // Mobile app compatibility
@@ -702,7 +722,7 @@ class FerrariTradingSystem extends EventEmitter {
       
       // Mobile app required fields
       createdAt: new Date(),
-      images: {}, // Will be populated by image generation service
+      images: {}, // Empty - no image generation needed
       
       // Analysis data structure for mobile app
       analysis: {
@@ -714,15 +734,8 @@ class FerrariTradingSystem extends EventEmitter {
         reasoning: analysis.reasoning
       },
       
-      // Company data (will be populated from logo service)
-      company: {
-        name: analysis.symbol, // Will be enhanced
-        symbol: analysis.symbol,
-        logoUrl: '', // Will be populated
-        sector: '',
-        business: '',
-        isCrypto: analysis.symbol.includes('/')
-      },
+      // Enhanced company data
+      company: companyData,
       
       // Metadata
       system: 'ferrari_v1',
@@ -779,15 +792,24 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   startRateLimitManager() {
+    // Prevent multiple rate limit managers
+    if (this.rateLimitManagerStarted) return;
+    this.rateLimitManagerStarted = true;
+    
     // Reset hourly limits every hour
-    setInterval(() => {
+    const hourlyInterval = setInterval(() => {
       this.resetHourlyLimits();
     }, 3600000); // 1 hour
     
     // Reset daily limits at midnight
-    setInterval(() => {
+    const dailyInterval = setInterval(() => {
       this.resetDailyLimits();
     }, 86400000); // 24 hours
+    
+    // Store intervals for cleanup
+    if (!this.state.intervals) this.state.intervals = new Set();
+    this.state.intervals.add(hourlyInterval);
+    this.state.intervals.add(dailyInterval);
   }
 
   startPerformanceTracking() {
@@ -830,19 +852,141 @@ class FerrariTradingSystem extends EventEmitter {
     }
     
     try {
-      const docRef = await this.db.collection('ferrari_tips').add(tip);
-      
-      // Also save to regular collection for app compatibility
-      await this.db.collection('trading_tips').add({
+      // Save only to existing trading_tips collection (backward compatibility)
+      const docRef = await this.db.collection('trading_tips').add({
         ...tip,
-        isFerrariSignal: true
+        isFerrariSignal: true,
+        source: 'ferrari_v1'
       });
+      
+      // Update system-wide tip counters
+      await this.updateSystemTipCounters();
       
       return docRef.id;
     } catch (error) {
       console.error('❌ Error saving Ferrari tip:', error);
       return null;
     }
+  }
+
+  async updateSystemTipCounters() {
+    const now = new Date();
+    const today = now.toDateString();
+    const currentHour = now.getHours();
+    
+    // Get or create system counters
+    if (!this.state.systemCounters) {
+      this.state.systemCounters = {
+        dailyCount: 0,
+        hourlyCount: 0,
+        lastReset: today,
+        lastHourReset: currentHour
+      };
+    }
+    
+    const counters = this.state.systemCounters;
+    
+    // Reset daily counter if new day
+    if (counters.lastReset !== today) {
+      counters.dailyCount = 0;
+      counters.lastReset = today;
+    }
+    
+    // Reset hourly counter if new hour
+    if (counters.lastHourReset !== currentHour) {
+      counters.hourlyCount = 0;
+      counters.lastHourReset = currentHour;
+    }
+    
+    // Increment counters
+    counters.dailyCount++;
+    counters.hourlyCount++;
+    
+    console.log(`📊 System counters: ${counters.dailyCount} today, ${counters.hourlyCount} this hour`);
+  }
+
+  async sendToAllUsers(tip) {
+    if (!this.firebaseReady) {
+      console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to all users');
+      return;
+    }
+    
+    try {
+      // Create deep link based on timeframe
+      const deepLink = this.createDeepLink(tip.timeframe);
+      
+      const message = {
+        title: `🏎️ Ferrari Signal: ${tip.symbol}`,
+        body: `${tip.sentiment.toUpperCase()} at $${tip.entryPrice.toFixed(2)} | Strength: ${tip.strength.toFixed(1)}/5`,
+        data: {
+          symbol: tip.symbol,
+          sentiment: tip.sentiment,
+          entryPrice: tip.entryPrice.toString(),
+          takeProfit: tip.takeProfit.toString(),
+          stopLoss: tip.stopLoss.toString(),
+          strength: tip.strength.toString(),
+          timeframe: tip.timeframe,
+          type: 'trading_tip',
+          trackingId: tip.trackingId,
+          timestamp: tip.timestamp,
+          deepLink: deepLink,
+          screen: this.getTargetScreen(tip.timeframe),
+          isFerrariSignal: 'true',
+          target_timeframe: tip.timeframe,
+          route: '/trading_tip',
+          click_action: 'FLUTTER_NOTIFICATION_CLICK'
+        }
+      };
+
+      // Send to topic (all app users)
+      await this.messaging.send({
+        topic: 'trading_tips',
+        notification: {
+          title: message.title,
+          body: message.body
+        },
+        data: message.data,
+        android: {
+          notification: {
+            clickAction: deepLink,
+            channelId: 'trading_tips'
+          }
+        },
+        apns: {
+          payload: {
+            aps: {
+              category: 'TRADING_TIP',
+              'url-args': [tip.timeframe]
+            }
+          }
+        }
+      });
+      
+      console.log(`✅ Ferrari notification sent to all users: ${tip.symbol} ${tip.sentiment}`);
+      
+    } catch (error) {
+      console.error('❌ Error sending Ferrari notifications:', error);
+    }
+  }
+
+  createDeepLink(timeframe) {
+    // Create deep links for navigation
+    const deepLinks = {
+      'short_term': 'tipsync://short-term',
+      'mid_term': 'tipsync://mid-term', 
+      'long_term': 'tipsync://long-term'
+    };
+    return deepLinks[timeframe] || 'tipsync://home';
+  }
+
+  getTargetScreen(timeframe) {
+    // Screen names for Flutter navigation
+    const screens = {
+      'short_term': 'ShortTermScreen',
+      'mid_term': 'MidTermScreen',
+      'long_term': 'LongTermScreen'
+    };
+    return screens[timeframe] || 'HomeScreen';
   }
 
   async sendToEligibleUsers(tip, eligibleUsers) {
@@ -908,6 +1052,12 @@ class FerrariTradingSystem extends EventEmitter {
       symbolsMonitored: this.getTotalSymbols(),
       performanceMetrics: this.state.performanceMetrics,
       rateLimiting: this.config.rateLimiting,
+      systemCounters: this.state.systemCounters || {
+        dailyCount: 0,
+        hourlyCount: 0,
+        lastReset: new Date().toDateString(),
+        lastHourReset: new Date().getHours()
+      },
       uptime: process.uptime()
     };
   }
@@ -955,18 +1105,19 @@ class FerrariTradingSystem extends EventEmitter {
   }
 
   resetHourlyLimits() {
-    console.log('🔄 Resetting hourly rate limits');
-    this.state.userLimits.forEach(limits => {
-      limits.hourlyCount = 0;
-    });
+    console.log('🔄 Resetting system hourly rate limits');
+    if (this.state.systemCounters) {
+      this.state.systemCounters.hourlyCount = 0;
+      this.state.systemCounters.lastHourReset = new Date().getHours();
+    }
   }
 
   resetDailyLimits() {
-    console.log('🔄 Resetting daily rate limits');
-    this.state.userLimits.forEach(limits => {
-      limits.dailyCount = 0;
-      limits.lastReset = new Date().toDateString();
-    });
+    console.log('🔄 Resetting system daily rate limits');
+    if (this.state.systemCounters) {
+      this.state.systemCounters.dailyCount = 0;
+      this.state.systemCounters.lastReset = new Date().toDateString();
+    }
   }
 
   updatePerformanceMetrics() {
@@ -980,6 +1131,102 @@ class FerrariTradingSystem extends EventEmitter {
     };
     
     this.state.performanceMetrics = metrics;
+  }
+
+  enhanceCompanyData(symbol) {
+    const isCrypto = symbol.includes('/');
+    
+    if (isCrypto) {
+      // Crypto pair handling
+      const [base, quote] = symbol.split('/');
+      return {
+        name: this.getCryptoName(base),
+        symbol: symbol,
+        logoUrl: `/logos/crypto/${base}.png`,
+        sector: 'Cryptocurrency',
+        business: `${this.getCryptoName(base)} digital currency`,
+        isCrypto: true,
+        baseAsset: base,
+        quoteAsset: quote
+      };
+    } else {
+      // Stock handling
+      return {
+        name: this.getCompanyName(symbol),
+        symbol: symbol,
+        logoUrl: `/logos/stocks/${symbol}.png`,
+        sector: this.getCompanySector(symbol),
+        business: this.getCompanyBusiness(symbol),
+        isCrypto: false
+      };
+    }
+  }
+
+  getCryptoName(symbol) {
+    const cryptoNames = {
+      'BTC': 'Bitcoin',
+      'ETH': 'Ethereum',
+      'ADA': 'Cardano',
+      'DOT': 'Polkadot',
+      'LINK': 'Chainlink',
+      'MATIC': 'Polygon',
+      'SOL': 'Solana',
+      'AVAX': 'Avalanche',
+      'ALGO': 'Algorand',
+      'ATOM': 'Cosmos'
+    };
+    return cryptoNames[symbol] || symbol;
+  }
+
+  getCompanyName(symbol) {
+    const companyNames = {
+      'AAPL': 'Apple Inc.',
+      'MSFT': 'Microsoft Corporation',
+      'GOOGL': 'Alphabet Inc.',
+      'AMZN': 'Amazon.com Inc.',
+      'TSLA': 'Tesla Inc.',
+      'NVDA': 'NVIDIA Corporation',
+      'META': 'Meta Platforms Inc.',
+      'NFLX': 'Netflix Inc.',
+      'AMD': 'Advanced Micro Devices',
+      'PLTR': 'Palantir Technologies',
+      'LCID': 'Lucid Group Inc.'
+    };
+    return companyNames[symbol] || `${symbol} Corporation`;
+  }
+
+  getCompanySector(symbol) {
+    const sectors = {
+      'AAPL': 'Technology',
+      'MSFT': 'Technology',
+      'GOOGL': 'Technology',
+      'AMZN': 'Consumer Discretionary',
+      'TSLA': 'Automotive',
+      'NVDA': 'Technology',
+      'META': 'Technology',
+      'NFLX': 'Entertainment',
+      'AMD': 'Technology',
+      'PLTR': 'Technology',
+      'LCID': 'Automotive'
+    };
+    return sectors[symbol] || 'Technology';
+  }
+
+  getCompanyBusiness(symbol) {
+    const businesses = {
+      'AAPL': 'Consumer electronics and software',
+      'MSFT': 'Cloud computing and software',
+      'GOOGL': 'Internet search and advertising',
+      'AMZN': 'E-commerce and cloud services',
+      'TSLA': 'Electric vehicles and energy',
+      'NVDA': 'Graphics processors and AI chips',
+      'META': 'Social media and virtual reality',
+      'NFLX': 'Streaming entertainment services',
+      'AMD': 'Computer processors and graphics',
+      'PLTR': 'Data analytics and software',
+      'LCID': 'Luxury electric vehicles'
+    };
+    return businesses[symbol] || 'Technology and innovation';
   }
 }
 
