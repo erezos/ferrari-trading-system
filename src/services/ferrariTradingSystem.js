@@ -167,45 +167,62 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectAlpacaFeed(symbols) {
+    console.log(`🔌 Connecting to Alpaca with ${symbols.length} symbols:`, symbols.slice(0, 5));
     const ws = new WebSocket('wss://stream.data.alpaca.markets/v2/iex');
     
     // Track WebSocket for graceful shutdown
     this.state.websockets.add(ws);
     
     ws.on('open', () => {
-      console.log('🟢 Alpaca feed connected');
+      console.log('🟢 Alpaca feed connected - sending authentication...');
       
       // Authenticate
-      ws.send(JSON.stringify({
+      const authMsg = {
         action: 'auth',
         key: process.env.ALPACA_API_KEY,
         secret: process.env.ALPACA_SECRET_KEY
-      }));
-      
-      // Subscribe to all stocks
-      const subscribeTimeout = setTimeout(() => {
-        if (!this.state.isShuttingDown) {
-          ws.send(JSON.stringify({
-            action: 'subscribe',
-            trades: symbols,
-            quotes: symbols,
-            bars: symbols
-          }));
-        }
-      }, 1000);
-      
-      this.state.timeouts.add(subscribeTimeout);
+      };
+      console.log('🔐 Alpaca auth message:', { action: authMsg.action, key: authMsg.key ? '***' : 'MISSING' });
+      ws.send(JSON.stringify(authMsg));
     });
 
     ws.on('message', (data) => {
       if (!this.state.isShuttingDown) {
-        const messages = JSON.parse(data);
-        messages.forEach(msg => this.processAlpacaMessage(msg));
+        try {
+          const messages = JSON.parse(data);
+          console.log(`📨 Alpaca raw message:`, messages);
+          
+          // Handle authentication response
+          if (Array.isArray(messages)) {
+            messages.forEach(msg => {
+              if (msg.T === 'success' && msg.msg === 'authenticated') {
+                console.log('✅ Alpaca authenticated successfully! Subscribing to symbols...');
+                
+                // Subscribe to trades only (most reliable)
+                const subscribeMsg = {
+                  action: 'subscribe',
+                  trades: symbols.slice(0, 10) // Start with first 10 symbols
+                };
+                console.log('📡 Alpaca subscribing to:', subscribeMsg);
+                ws.send(JSON.stringify(subscribeMsg));
+                
+              } else if (msg.T === 'error') {
+                console.error('❌ Alpaca error:', msg);
+              } else if (msg.T === 'subscription') {
+                console.log('✅ Alpaca subscription confirmed:', msg);
+              } else {
+                this.processAlpacaMessage(msg);
+              }
+            });
+          }
+        } catch (error) {
+          console.error('❌ Error parsing Alpaca message:', error, 'Raw data:', data.toString());
+        }
       }
     });
 
-    ws.on('close', () => {
-      console.log('🔴 Alpaca feed disconnected');
+    ws.on('close', (code, reason) => {
+      console.log(`🔴 Alpaca feed disconnected: Code ${code}, Reason: ${reason}`);
       this.state.websockets.delete(ws);
     });
 
@@ -218,47 +235,110 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectBinanceFeed(cryptoSymbols) {
-    // Convert crypto symbols to Binance format
-    const binanceSymbols = cryptoSymbols.map(s => s.replace('/', '').toLowerCase());
+    console.log(`🔌 Connecting to Binance with ${cryptoSymbols.length} crypto symbols:`, cryptoSymbols.slice(0, 5));
     
-    // Create stream URL for all crypto symbols
+    // Convert crypto symbols to Binance format (BTC/USD -> btcusdt)
+    const binanceSymbols = cryptoSymbols.map(s => {
+      const symbol = s.replace('/', '').toLowerCase();
+      // Convert USD to USDT for Binance
+      return symbol.replace('usd', 'usdt');
+    });
+    
+    console.log('🔄 Converted symbols for Binance:', binanceSymbols.slice(0, 5));
+    
+    // Create stream URL for ticker data (24hr stats)
     const streamUrl = `wss://stream.binance.com:9443/ws/${binanceSymbols.map(s => `${s}@ticker`).join('/')}`;
+    console.log('🌐 Binance stream URL:', streamUrl.substring(0, 100) + '...');
+    
     const ws = new WebSocket(streamUrl);
     
+    // Track WebSocket for graceful shutdown
+    this.state.websockets.add(ws);
+    
     ws.on('open', () => {
-      console.log('🟢 Binance crypto feed connected');
+      console.log('🟢 Binance crypto feed connected successfully');
     });
 
     ws.on('message', (data) => {
-      const message = JSON.parse(data);
-      this.processBinanceMessage(message);
+      if (!this.state.isShuttingDown) {
+        try {
+          const message = JSON.parse(data);
+          console.log(`📨 Binance raw message sample:`, {
+            symbol: message.s,
+            price: message.c,
+            change: message.P,
+            volume: message.v
+          });
+          this.processBinanceMessage(message);
+        } catch (error) {
+          console.error('❌ Error parsing Binance message:', error, 'Raw data:', data.toString().substring(0, 200));
+        }
+      }
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log(`🔴 Binance feed disconnected: Code ${code}, Reason: ${reason}`);
+      this.state.websockets.delete(ws);
+    });
+
+    ws.on('error', (error) => {
+      console.error('❌ Binance feed error:', error);
+      this.state.websockets.delete(ws);
     });
 
     return ws;
   }
 
   async connectFinnhubFeed(symbols) {
+    console.log(`🔌 Connecting to Finnhub with ${symbols.length} symbols:`, symbols.slice(0, 5));
     const ws = new WebSocket(`wss://ws.finnhub.io?token=${process.env.FINNHUB_API_KEY}`);
     
+    // Track WebSocket for graceful shutdown
+    this.state.websockets.add(ws);
+    
     ws.on('open', () => {
-      console.log('🟢 Finnhub feed connected');
+      console.log('🟢 Finnhub feed connected - subscribing to symbols...');
       
-      // Subscribe to all symbols
-      symbols.forEach(symbol => {
-        ws.send(JSON.stringify({ type: 'subscribe', symbol }));
+      // Subscribe to first 10 symbols to start
+      const symbolsToSubscribe = symbols.slice(0, 10);
+      console.log('📡 Finnhub subscribing to:', symbolsToSubscribe);
+      
+      symbolsToSubscribe.forEach(symbol => {
+        const subscribeMsg = { type: 'subscribe', symbol };
+        console.log(`📡 Subscribing to ${symbol}:`, subscribeMsg);
+        ws.send(JSON.stringify(subscribeMsg));
       });
     });
 
     ws.on('message', (data) => {
-      const message = JSON.parse(data);
-      this.processFinnhubMessage(message);
+      if (!this.state.isShuttingDown) {
+        try {
+          const message = JSON.parse(data);
+          console.log(`📨 Finnhub raw message:`, message);
+          this.processFinnhubMessage(message);
+        } catch (error) {
+          console.error('❌ Error parsing Finnhub message:', error, 'Raw data:', data.toString());
+        }
+      }
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log(`🔴 Finnhub feed disconnected: Code ${code}, Reason: ${reason}`);
+      this.state.websockets.delete(ws);
+    });
+
+    ws.on('error', (error) => {
+      console.error('❌ Finnhub feed error:', error);
+      this.state.websockets.delete(ws);
     });
 
     return ws;
   }
 
   processAlpacaMessage(msg) {
+    console.log(`🔍 Processing Alpaca message:`, msg);
     if (msg.T === 't') { // Trade message
+      console.log(`📈 Alpaca trade: ${msg.S} @ $${msg.p} (volume: ${msg.s})`);
       this.updatePrice({
         symbol: msg.S,
         price: msg.p,
@@ -266,17 +346,23 @@ export class FerrariTradingSystem extends EventEmitter {
         timestamp: new Date(msg.t).getTime(),
         source: 'alpaca'
       });
+    } else {
+      console.log(`ℹ️ Alpaca non-trade message type: ${msg.T}`);
     }
   }
 
   processBinanceMessage(msg) {
+    console.log(`🔍 Processing Binance message:`, { symbol: msg.s, price: msg.c, change: msg.P });
     if (msg.s) { // Ticker message
-      const symbol = `${msg.s.slice(0, -4)}/${msg.s.slice(-4)}`.toUpperCase();
+      // Convert BTCUSDT back to BTC/USD format
+      const symbol = msg.s.replace('USDT', '/USD').toUpperCase();
+      console.log(`📈 Binance ticker: ${symbol} @ $${msg.c} (${msg.P}% change)`);
+      
       this.updatePrice({
         symbol,
         price: parseFloat(msg.c),
         volume: parseFloat(msg.v),
-        change24h: parseFloat(msg.P),
+        changePercent: parseFloat(msg.P),
         timestamp: msg.E,
         source: 'binance'
       });
@@ -284,8 +370,11 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   processFinnhubMessage(msg) {
+    console.log(`🔍 Processing Finnhub message:`, msg);
     if (msg.type === 'trade' && msg.data) {
+      console.log(`📈 Finnhub trades: ${msg.data.length} trades received`);
       msg.data.forEach(trade => {
+        console.log(`📈 Finnhub trade: ${trade.s} @ $${trade.p} (volume: ${trade.v})`);
         this.updatePrice({
           symbol: trade.s,
           price: trade.p,
@@ -294,6 +383,10 @@ export class FerrariTradingSystem extends EventEmitter {
           source: 'finnhub'
         });
       });
+    } else if (msg.type === 'ping') {
+      console.log('💓 Finnhub ping received');
+    } else {
+      console.log(`ℹ️ Finnhub message type: ${msg.type}`);
     }
   }
 
