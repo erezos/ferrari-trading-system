@@ -16,7 +16,8 @@
       "variables": {
         "NODE_ENV": "production",
         "RAILWAY_HEALTHCHECK_TIMEOUT_SEC": "300",
-        "RAILWAY_DEPLOYMENT_OVERLAP_SECONDS": "10"
+        "RAILWAY_DEPLOYMENT_OVERLAP_SECONDS": "10",
+        "RAILWAY_DEPLOYMENT_REPLICA_LIMIT": "1"
       }
     }
   }
