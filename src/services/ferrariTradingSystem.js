@@ -17,6 +17,7 @@ import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import LogoUtils from '../utils/logoUtils.js';
 import technicalAnalysisService from './technicalAnalysisService.js';
+import institutionalAnalysisService from './institutionalAnalysisService.js';
 
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
@@ -399,7 +400,9 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async performComprehensiveAnalysis(symbol, symbolData) {
     try {
-      // Multi-timeframe analysis
+      console.log(`🔍 Performing comprehensive analysis for ${symbol}`);
+      
+      // PHASE 1: Multi-timeframe technical analysis
       const timeframes = ['1min', '5min', '15min', '1hour'];
       const analyses = {};
       
@@ -411,15 +414,54 @@ export class FerrariTradingSystem extends EventEmitter {
         }
       }
 
-      // Combine timeframe signals
+      // PHASE 2: Institutional-grade analysis (HEDGE FUND LEVEL)
+      let institutionalAnalysis = null;
+      try {
+        console.log(`🏛️ Running institutional analysis for ${symbol}`);
+        institutionalAnalysis = await institutionalAnalysisService.performInstitutionalAnalysis(
+          symbol, 
+          symbolData.priceHistory, 
+          '1h'
+        );
+        console.log(`✅ Institutional analysis complete for ${symbol}: ${institutionalAnalysis.sentiment} (${institutionalAnalysis.compositeScore.toFixed(2)})`);
+      } catch (error) {
+        console.warn(`⚠️ Institutional analysis failed for ${symbol}:`, error.message);
+      }
+
+      // PHASE 3: Combine all analyses
       const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
       
       if (!combinedAnalysis) {
         console.warn(`⚠️ No valid analysis generated for ${symbol}`);
         return null;
       }
+
+      // PHASE 4: Enhance with institutional insights
+      if (institutionalAnalysis) {
+        combinedAnalysis.institutionalGrade = {
+          compositeScore: institutionalAnalysis.compositeScore,
+          confidence: institutionalAnalysis.confidence,
+          sentiment: institutionalAnalysis.sentiment,
+          factors: institutionalAnalysis.factors,
+          reasoning: institutionalAnalysis.reasoning,
+          analysisType: institutionalAnalysis.analysisType
+        };
+        
+        // Boost strength if institutional analysis aligns
+        if (institutionalAnalysis.sentiment === combinedAnalysis.sentiment) {
+          combinedAnalysis.strength += 0.5; // Institutional confirmation boost
+          console.log(`🚀 Institutional confirmation boost for ${symbol}: ${combinedAnalysis.sentiment}`);
+        }
+        
+        // Override with institutional score if significantly stronger
+        if (institutionalAnalysis.compositeScore > combinedAnalysis.strength + 1.0) {
+          console.log(`🏛️ Institutional override for ${symbol}: ${institutionalAnalysis.compositeScore.toFixed(2)} > ${combinedAnalysis.strength.toFixed(2)}`);
+          combinedAnalysis.strength = institutionalAnalysis.compositeScore;
+          combinedAnalysis.sentiment = institutionalAnalysis.sentiment;
+        }
+      }
       
-      // Add market context with error handling
+      // PHASE 5: Add market context with error handling
       try {
         combinedAnalysis.marketContext = await this.getMarketContext();
       } catch (error) {
@@ -432,8 +474,10 @@ export class FerrariTradingSystem extends EventEmitter {
         };
       }
       
-      // Calculate final strength score
+      // PHASE 6: Calculate final strength score
       combinedAnalysis.finalStrength = this.calculateFinalStrength(combinedAnalysis);
+      
+      console.log(`📊 Final analysis for ${symbol}: ${combinedAnalysis.sentiment} strength ${combinedAnalysis.finalStrength.toFixed(2)}`);
       
       return combinedAnalysis;
     } catch (error) {
@@ -744,6 +788,17 @@ export class FerrariTradingSystem extends EventEmitter {
     // Determine timeframe based on strength and market conditions
     const timeframe = this.determineTimeframe(analysis);
     
+    // Enhanced reasoning with institutional insights
+    let enhancedReasoning = [...analysis.reasoning];
+    
+    // Add institutional analysis to reasoning if available
+    if (analysis.institutionalGrade) {
+      enhancedReasoning.push('');
+      enhancedReasoning.push('🏛️ INSTITUTIONAL ANALYSIS:');
+      enhancedReasoning.push(...analysis.institutionalGrade.reasoning);
+      enhancedReasoning.push(`Institutional Confidence: ${analysis.institutionalGrade.confidence.toFixed(1)}%`);
+    }
+    
     return {
       symbol: analysis.symbol,
       timeframe: timeframe, // Mobile app compatibility
@@ -758,23 +813,27 @@ export class FerrariTradingSystem extends EventEmitter {
       takeProfit2: analysis.levels.takeProfit2,
       riskRewardRatio: analysis.riskRewardRatio,
       
-      // Context and reasoning
-      reasoning: analysis.reasoning,
+      // Context and reasoning - ENHANCED WITH INSTITUTIONAL INSIGHTS
+      reasoning: enhancedReasoning,
       marketContext: analysis.marketContext,
       priceChange: analysis.priceChangePercent,
+      
+      // Institutional grade data (HEDGE FUND LEVEL)
+      institutionalGrade: analysis.institutionalGrade || null,
       
       // Mobile app required fields
       createdAt: new Date(),
       images: {}, // Will be populated by image generation service
       
-      // Analysis data structure for mobile app
+      // Analysis data structure for mobile app - ENHANCED
       analysis: {
         sentiment: analysis.sentiment,
         strength: analysis.finalStrength,
         entryPrice: analysis.levels.entry,
         stopLoss: analysis.levels.stopLoss,
         takeProfit: analysis.levels.takeProfit1,
-        reasoning: analysis.reasoning
+        reasoning: enhancedReasoning,
+        institutionalGrade: analysis.institutionalGrade || null
       },
       
       // Complete company data with logo and business info
@@ -787,11 +846,13 @@ export class FerrariTradingSystem extends EventEmitter {
         isCrypto: companyInfo.isCrypto
       },
       
-      // Metadata
-      system: 'ferrari_v1',
+      // Metadata - ENHANCED
+      system: 'ferrari_v2_institutional',
+      analysisLevel: analysis.institutionalGrade ? 'institutional_grade' : 'technical_grade',
       timestamp: analysis.timestamp,
       isPremium: true,
       isFerrariSignal: true,
+      isInstitutionalGrade: !!analysis.institutionalGrade,
       
       // Performance tracking
       trackingId: this.generateTrackingId(),
@@ -829,6 +890,8 @@ export class FerrariTradingSystem extends EventEmitter {
     }
     
     reasons.push(`Multi-timeframe confirmation across 1m-1h analysis`);
+    reasons.push(`🏛️ Enhanced with institutional-grade hedge fund analysis`);
+    reasons.push(`📊 Multi-factor scoring: momentum, sentiment, insider activity`);
     reasons.push(`Risk management: Dynamic ATR-based levels`);
     
     return reasons;

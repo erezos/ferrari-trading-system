@@ -1,5 +1,7 @@
 import { FerrariTradingSystem } from './src/services/ferrariTradingSystem.js';
 import firebaseConfig from './src/config/firebase.js';
+import express from 'express';
+import cors from 'cors';
 import dotenv from 'dotenv';
 
 // Load environment variables
@@ -7,7 +9,7 @@ dotenv.config();
 
 /**
  * Ferrari Trading System - Production Startup
- * With modern graceful shutdown handling and proper Firebase initialization
+ * With HTTP health checks for Railway deployment
  */
 
 class FerrariSystemManager {
@@ -16,16 +18,21 @@ class FerrariSystemManager {
     this.isShuttingDown = false;
     this.shutdownTimeout = null;
     this.firebaseServices = null;
+    this.httpServer = null;
+    this.app = express();
   }
 
   async start() {
     try {
-      console.log('🏎️ Ferrari Trading System v1.0 - Starting...');
+      console.log('🏎️ Ferrari Trading System v2.0 - Starting...');
       console.log('📅 Started at:', new Date().toISOString());
       console.log('🌍 Environment:', process.env.NODE_ENV || 'production');
       console.log('🚀 Node.js version:', process.version);
       
-      // Initialize Firebase first
+      // Start HTTP server first for Railway health checks
+      await this.startHttpServer();
+      
+      // Initialize Firebase
       console.log('🔥 Initializing Firebase services...');
       this.firebaseServices = await firebaseConfig.initialize();
       
@@ -55,6 +62,105 @@ class FerrariSystemManager {
       console.error('💥 Failed to start Ferrari system:', error);
       process.exit(1);
     }
+  }
+
+  async startHttpServer() {
+    const port = process.env.PORT || 3000;
+    
+    // Configure CORS
+    this.app.use(cors());
+    this.app.use(express.json());
+    
+    // Health check endpoint for Railway
+    this.app.get('/health', (req, res) => {
+      const status = {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        system: 'ferrari_trading_system',
+        version: '2.0.0'
+      };
+      
+      if (this.ferrariSystem) {
+        try {
+          const systemStats = this.ferrariSystem.getSystemStats();
+          status.ferrari = {
+            active: true,
+            symbolsMonitored: systemStats.symbolsMonitored,
+            connectedFeeds: Object.keys(systemStats.connectedFeeds).length,
+            signalsGenerated: systemStats.signalsGenerated
+          };
+        } catch (error) {
+          status.ferrari = { active: false, error: 'Stats unavailable' };
+        }
+      }
+      
+      res.json(status);
+    });
+    
+    // Root endpoint
+    this.app.get('/', (req, res) => {
+      res.json({
+        name: 'Ferrari Trading System',
+        version: '2.0.0',
+        status: 'operational',
+        description: 'Real-time institutional-grade trading signals',
+        endpoints: {
+          health: '/health',
+          status: '/status'
+        }
+      });
+    });
+    
+    // Status endpoint with detailed system info
+    this.app.get('/status', (req, res) => {
+      const status = {
+        system: 'Ferrari Trading System',
+        version: '2.0.0',
+        environment: process.env.NODE_ENV || 'production',
+        uptime: Math.round(process.uptime()),
+        timestamp: new Date().toISOString(),
+        firebase: this.firebaseServices?.isReady ? 'connected' : 'test_mode',
+        trading: {
+          active: !!this.ferrariSystem,
+          symbolsMonitored: 73,
+          qualityGates: {
+            minimumStrength: 4.0,
+            minimumRiskReward: 2.5,
+            maxDailyTips: 5
+          }
+        }
+      };
+      
+      if (this.ferrariSystem) {
+        try {
+          const systemStats = this.ferrariSystem.getSystemStats();
+          status.trading = {
+            ...status.trading,
+            ...systemStats
+          };
+        } catch (error) {
+          status.trading.error = 'Stats unavailable';
+        }
+      }
+      
+      res.json(status);
+    });
+    
+    // Start HTTP server
+    return new Promise((resolve, reject) => {
+      this.httpServer = this.app.listen(port, '0.0.0.0', (err) => {
+        if (err) {
+          console.error('❌ Failed to start HTTP server:', err);
+          reject(err);
+        } else {
+          console.log(`🌐 HTTP server running on port ${port}`);
+          console.log(`🏥 Health check: http://localhost:${port}/health`);
+          console.log(`📊 Status endpoint: http://localhost:${port}/status`);
+          resolve();
+        }
+      });
+    });
   }
 
   async validateEnvironment() {
@@ -132,7 +238,16 @@ class FerrariSystemManager {
     }, 25000); // 25 seconds to be safe
     
     try {
-      // Shutdown Ferrari system first
+      // Shutdown HTTP server first
+      if (this.httpServer) {
+        console.log('🌐 Shutting down HTTP server...');
+        await new Promise((resolve) => {
+          this.httpServer.close(resolve);
+        });
+        console.log('✅ HTTP server shutdown completed');
+      }
+      
+      // Shutdown Ferrari system
       if (this.ferrariSystem) {
         console.log('🏎️ Shutting down Ferrari Trading System...');
         await this.ferrariSystem.shutdown();
@@ -173,18 +288,23 @@ class FerrariSystemManager {
         return;
       }
       
-      // Optional: Log system status every 5 minutes
+      // Log system status every 5 minutes
       if (Date.now() % 300000 < 1000) { // Roughly every 5 minutes
         console.log('💓 Ferrari system heartbeat - System operational');
         
         // Log system stats
         if (this.ferrariSystem) {
-          const stats = this.ferrariSystem.getSystemStats();
-          console.log('📊 System stats:', {
-            symbolsMonitored: stats.symbolsMonitored,
-            connectedFeeds: Object.keys(stats.connectedFeeds).length,
-            uptime: Math.round(stats.uptime / 60) + ' minutes'
-          });
+          try {
+            const stats = this.ferrariSystem.getSystemStats();
+            console.log('📊 System stats:', {
+              symbolsMonitored: stats.symbolsMonitored,
+              connectedFeeds: Object.keys(stats.connectedFeeds).length,
+              uptime: Math.round(stats.uptime / 60) + ' minutes',
+              signalsGenerated: stats.signalsGenerated
+            });
+          } catch (error) {
+            console.log('📊 System stats: unavailable');
+          }
         }
       }
     }, 1000);
@@ -198,7 +318,7 @@ class FerrariSystemManager {
 
 // Start the Ferrari system
 const manager = new FerrariSystemManager();
-manager.start().catch((error) => {
-  console.error('💥 Ferrari system startup failed:', error);
+manager.start().catch(error => {
+  console.error('💥 Critical startup error:', error);
   process.exit(1);
 }); 
