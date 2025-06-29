@@ -781,19 +781,20 @@ export class FerrariTradingSystem extends EventEmitter {
       return false;
     }
     
-    // Risk/reward ratio
+    // Risk/reward ratio calculation
     const risk = Math.abs(analysis.levels.entry - analysis.levels.stopLoss);
     const reward = Math.abs(analysis.levels.takeProfit1 - analysis.levels.entry);
     const riskReward = risk > 0 ? reward / risk : 0;
     
     console.log(`🔧 DEBUG RR: ${analysis.symbol} | Risk: ${risk.toFixed(6)} | Reward: ${reward.toFixed(6)} | RR: ${riskReward.toFixed(2)}`);
     
+    // ALWAYS set riskRewardRatio for debug purposes
+    analysis.riskRewardRatio = riskReward;
+    
+    // Check if RR meets minimum requirement
     if (riskReward < gates.minimumRiskReward) {
       return false;
     }
-    
-    // Add to analysis
-    analysis.riskRewardRatio = riskReward;
     
     return true;
   }
