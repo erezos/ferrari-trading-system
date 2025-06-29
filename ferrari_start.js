@@ -9,7 +9,7 @@ dotenv.config();
 
 /**
  * Ferrari Trading System - Production Startup
- * With Railway-optimized health checks
+ * With Railway-optimized health checks and startup sequence
  */
 
 class FerrariSystemManager {
@@ -21,198 +21,231 @@ class FerrariSystemManager {
     this.httpServer = null;
     this.app = express();
     this.isReady = false;
+    this.startupStartTime = Date.now();
+    this.isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID;
   }
 
   async start() {
     try {
       console.log('🏎️ Ferrari Trading System v2.0 - Starting...');
       console.log('📅 Started at:', new Date().toISOString());
-      console.log('🌍 Environment:', process.env.NODE_ENV || 'production');
+      console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
       console.log('🚀 Node.js version:', process.version);
       
-      // Start HTTP server FIRST for Railway health checks
+      if (this.isRailway) {
+        console.log('🚂 Running on Railway platform');
+        console.log('📦 Railway service:', process.env.RAILWAY_SERVICE_NAME || 'unknown');
+      }
+
+      // Start HTTP server first for Railway health checks
       await this.startHttpServer();
       
-      // Initialize Firebase (async, don't block health checks)
-      this.initializeFirebaseAsync();
+      // Initialize Firebase services
+      await this.initializeFirebaseServices();
       
       // Set up graceful shutdown handlers
       this.setupGracefulShutdown();
       
-      // Mark as ready for basic health checks
-      this.isReady = true;
+      // Initialize Ferrari system (async, don't block health checks)
+      this.initializeFerrariSystemAsync();
       
       console.log('✅ Ferrari Trading System successfully started!');
       console.log('🎯 System ready for real-time signal generation');
       
-      // Keep process alive
-      this.keepAlive();
-      
     } catch (error) {
-      console.error('💥 Failed to start Ferrari system:', error);
+      console.error('❌ Failed to start Ferrari Trading System:', error);
       process.exit(1);
-    }
-  }
-
-  async initializeFirebaseAsync() {
-    try {
-      console.log('🔥 Initializing Firebase services...');
-      this.firebaseServices = await firebaseConfig.initialize();
-      
-      if (this.firebaseServices.isReady) {
-        console.log('✅ Firebase services ready');
-        
-        // Now initialize Ferrari system
-        this.ferrariSystem = new FerrariTradingSystem(this.firebaseServices);
-        await this.ferrariSystem.initialize();
-        console.log('🏎️ Ferrari Trading System fully operational');
-      } else {
-        console.log('⚠️ Running in test mode - Firebase disabled');
-      }
-      
-      // Validate environment variables
-      await this.validateEnvironment();
-      
-    } catch (error) {
-      console.error('❌ Firebase initialization error:', error);
-      // Don't exit - continue with limited functionality
     }
   }
 
   async startHttpServer() {
     const port = process.env.PORT || 3000;
     
-    // Configure middleware
+    // Configure CORS
     this.app.use(cors());
-    this.app.use(express.json({ limit: '1mb' }));
+    this.app.use(express.json());
     
-    // Railway health check endpoint - MUST be fast and simple
+    // Railway health check - MUST be fast and simple
     this.app.get('/health', (req, res) => {
-      // Railway expects a 200 OK response quickly
+      // Always return OK for Railway health checks
       res.status(200).send('OK');
     });
-    
-    // Alternative health check endpoints
+
+    // Detailed health check for monitoring
     this.app.get('/healthz', (req, res) => {
-      res.status(200).json({ 
-        status: 'healthy',
-        ready: this.isReady,
-        timestamp: new Date().toISOString()
-      });
-    });
-    
-    this.app.get('/ready', (req, res) => {
-      if (this.isReady) {
-        res.status(200).json({ status: 'ready' });
-      } else {
-        res.status(503).json({ status: 'not ready' });
-      }
-    });
-    
-    // Root endpoint
-    this.app.get('/', (req, res) => {
-      res.json({
-        name: 'Ferrari Trading System',
-        version: '2.0.0',
-        status: 'operational',
-        description: 'Real-time institutional-grade trading signals',
-        endpoints: {
-          health: '/health',
-          healthz: '/healthz',
-          ready: '/ready',
-          status: '/status'
-        }
-      });
-    });
-    
-    // Detailed status endpoint
-    this.app.get('/status', (req, res) => {
+      const uptime = process.uptime();
+      const startupTime = Date.now() - this.startupStartTime;
+      
       const status = {
-        system: 'Ferrari Trading System',
-        version: '2.0.0',
-        environment: process.env.NODE_ENV || 'production',
-        ready: this.isReady,
-        uptime: Math.round(process.uptime()),
+        status: 'healthy',
         timestamp: new Date().toISOString(),
-        firebase: this.firebaseServices?.isReady ? 'connected' : 'initializing',
-        trading: {
-          active: !!this.ferrariSystem,
-          symbolsMonitored: 73,
-          qualityGates: {
-            minimumStrength: 4.0,
-            minimumRiskReward: 2.5,
-            maxDailyTips: 5
-          }
-        }
+        uptime: `${uptime.toFixed(2)}s`,
+        startupTime: `${startupTime}ms`,
+        system: 'ferrari_trading_system',
+        version: '2.0.0',
+        railway: !!this.isRailway,
+        ready: this.isReady
       };
       
       if (this.ferrariSystem) {
         try {
           const systemStats = this.ferrariSystem.getSystemStats();
-          status.trading = {
-            ...status.trading,
-            ...systemStats
+          status.ferrari = {
+            active: true,
+            symbolsMonitored: systemStats.symbolsMonitored,
+            connectedFeeds: Object.keys(systemStats.connectedFeeds).length,
+            signalsGenerated: systemStats.signalsGenerated,
+            lastHeartbeat: systemStats.lastHeartbeat
           };
         } catch (error) {
-          status.trading.error = 'Stats unavailable';
+          status.ferrari = { 
+            active: false, 
+            error: error.message,
+            initializing: !this.isReady
+          };
         }
+      } else {
+        status.ferrari = { 
+          active: false, 
+          initializing: true 
+        };
       }
       
       res.json(status);
     });
-    
-    // Error handling middleware
-    this.app.use((err, req, res, next) => {
-      console.error('HTTP Error:', err);
-      res.status(500).json({ error: 'Internal server error' });
+
+    // Ready check for Railway
+    this.app.get('/ready', (req, res) => {
+      if (this.isReady && this.ferrariSystem) {
+        res.status(200).json({ ready: true, timestamp: new Date().toISOString() });
+      } else {
+        res.status(503).json({ ready: false, initializing: true });
+      }
     });
-    
-    // Start HTTP server
-    return new Promise((resolve, reject) => {
-      this.httpServer = this.app.listen(port, '0.0.0.0', (err) => {
-        if (err) {
-          console.error('❌ Failed to start HTTP server:', err);
-          reject(err);
-        } else {
-          console.log(`🌐 HTTP server running on port ${port}`);
-          console.log(`🏥 Health check: http://localhost:${port}/health`);
-          console.log(`📊 Status endpoint: http://localhost:${port}/status`);
-          resolve();
+
+    // Root endpoint
+    this.app.get('/', (req, res) => {
+      res.json({
+        service: 'Ferrari Trading System v2.0',
+        status: 'running',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+          health: '/health',
+          detailed: '/healthz', 
+          ready: '/ready',
+          status: '/status'
         }
       });
-      
-      // Handle server errors
-      this.httpServer.on('error', (err) => {
-        console.error('HTTP Server Error:', err);
-        reject(err);
+    });
+
+    // Status endpoint with comprehensive information
+    this.app.get('/status', async (req, res) => {
+      try {
+        const status = {
+          service: 'Ferrari Trading System v2.0',
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime(),
+          ready: this.isReady,
+          environment: {
+            node: process.version,
+            platform: process.platform,
+            railway: !!this.isRailway,
+            env: process.env.NODE_ENV || 'development'
+          },
+          memory: process.memoryUsage(),
+          firebase: {
+            initialized: !!this.firebaseServices,
+            ready: !!this.firebaseServices
+          }
+        };
+
+        if (this.ferrariSystem) {
+          const systemStats = this.ferrariSystem.getSystemStats();
+          status.ferrari = systemStats;
+        }
+
+        res.json(status);
+      } catch (error) {
+        res.status(500).json({
+          error: 'Failed to get status',
+          message: error.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+
+    // Start server
+    return new Promise((resolve, reject) => {
+      this.httpServer = this.app.listen(port, '0.0.0.0', (error) => {
+        if (error) {
+          reject(error);
+        } else {
+          console.log('🌐 HTTP server running on port', port);
+          console.log('🏥 Health check: http://localhost:' + port + '/health');
+          console.log('📊 Status endpoint: http://localhost:' + port + '/status');
+          resolve();
+        }
       });
     });
   }
 
-  async validateEnvironment() {
+  async initializeFirebaseServices() {
+    console.log('🔥 Initializing Firebase services...');
+    
+    try {
+      this.firebaseServices = await firebaseConfig.initialize();
+      console.log('✅ Firebase services ready');
+    } catch (error) {
+      console.error('❌ Firebase initialization failed:', error);
+      throw error;
+    }
+  }
+
+  async initializeFerrariSystemAsync() {
+    try {
+      console.log('🏎️ Initializing Ferrari Trading System...');
+      
+      // Create Ferrari system
+      this.ferrariSystem = new FerrariTradingSystem(this.firebaseServices);
+      
+      // Initialize the system
+      await this.ferrariSystem.initialize();
+      
+      this.isReady = true;
+      console.log('🏎️ Ferrari Trading System fully operational');
+      
+      // Log environment validation
+      this.validateEnvironment();
+      
+    } catch (error) {
+      console.error('❌ Ferrari system initialization failed:', error);
+      // Don't exit - let health checks continue to work
+      // The system can retry initialization
+    }
+  }
+
+  validateEnvironment() {
     console.log('🔍 Validating environment configuration...');
     
-    // Check API keys for data feeds
-    const apiKeys = {
-      'Alpaca API Key': process.env.ALPACA_API_KEY,
-      'Alpaca Secret': process.env.ALPACA_SECRET_KEY,
-      'Finnhub API Key': process.env.FINNHUB_API_KEY
-    };
+    const requiredEnvVars = [
+      'ALPACA_API_KEY',
+      'ALPACA_SECRET_KEY', 
+      'FINNHUB_API_KEY',
+      'BINANCE_API_KEY',
+      'BINANCE_SECRET_KEY'
+    ];
     
-    const missingKeys = Object.entries(apiKeys)
-      .filter(([name, value]) => !value)
-      .map(([name]) => name);
+    const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
     
-    if (missingKeys.length > 0) {
-      console.warn('⚠️ Missing API keys (will affect data feeds):', missingKeys.join(', '));
+    if (missingVars.length > 0) {
+      console.warn('⚠️ Missing environment variables:', missingVars);
     } else {
       console.log('✅ All API keys configured');
     }
     
-    // Railway-specific checks
-    if (process.env.RAILWAY_ENVIRONMENT) {
+    if (this.isRailway) {
       console.log('🚂 Running on Railway platform');
-      console.log('📦 Railway service:', process.env.RAILWAY_SERVICE_NAME || 'unknown');
+      console.log('📦 Railway service:', process.env.RAILWAY_SERVICE_NAME || 'trading-tips-system');
     }
     
     console.log('✅ Environment validation completed');
@@ -221,28 +254,23 @@ class FerrariSystemManager {
   setupGracefulShutdown() {
     console.log('🛡️ Setting up graceful shutdown handlers...');
     
-    // Handle SIGTERM (Railway sends this)
-    process.on('SIGTERM', () => {
-      console.log('📨 Received SIGTERM signal');
-      this.gracefulShutdown('SIGTERM');
+    const signals = ['SIGTERM', 'SIGINT', 'SIGUSR2'];
+    
+    signals.forEach(signal => {
+      process.on(signal, () => {
+        console.log(`📨 Received ${signal} signal`);
+        this.gracefulShutdown(signal);
+      });
     });
     
-    // Handle SIGINT (Ctrl+C)
-    process.on('SIGINT', () => {
-      console.log('📨 Received SIGINT signal');
-      this.gracefulShutdown('SIGINT');
-    });
-    
-    // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
       console.error('💥 Uncaught Exception:', error);
-      this.gracefulShutdown('UNCAUGHT_EXCEPTION');
+      this.gracefulShutdown('uncaughtException');
     });
     
-    // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
       console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
-      this.gracefulShutdown('UNHANDLED_REJECTION');
+      this.gracefulShutdown('unhandledRejection');
     });
     
     console.log('✅ Graceful shutdown handlers configured');
@@ -250,21 +278,32 @@ class FerrariSystemManager {
 
   async gracefulShutdown(signal) {
     if (this.isShuttingDown) {
-      console.log('🔄 Shutdown already in progress...');
+      console.log('⏳ Shutdown already in progress...');
       return;
     }
     
     this.isShuttingDown = true;
     console.log(`🛑 Initiating graceful shutdown (signal: ${signal})`);
     
-    // Set shutdown timeout (Railway gives us 30 seconds)
+    // Set a maximum shutdown time
     this.shutdownTimeout = setTimeout(() => {
-      console.error('⏰ Graceful shutdown timeout, forcing exit');
+      console.log('⏰ Shutdown timeout reached, forcing exit');
       process.exit(1);
-    }, 25000); // 25 seconds to be safe
+    }, 25000); // 25 seconds to allow Railway's 30-second limit
     
     try {
-      // Shutdown Ferrari system first
+      // Shutdown HTTP server first
+      if (this.httpServer) {
+        console.log('🌐 Shutting down HTTP server...');
+        await new Promise((resolve) => {
+          this.httpServer.close(() => {
+            console.log('✅ HTTP server shutdown completed');
+            resolve();
+          });
+        });
+      }
+      
+      // Shutdown Ferrari system
       if (this.ferrariSystem) {
         console.log('🏎️ Shutting down Ferrari Trading System...');
         await this.ferrariSystem.shutdown();
@@ -272,22 +311,13 @@ class FerrariSystemManager {
       }
       
       // Shutdown Firebase services
-      if (this.firebaseServices && this.firebaseServices.isReady) {
+      if (this.firebaseServices) {
         console.log('🔥 Shutting down Firebase services...');
         await firebaseConfig.shutdown();
         console.log('✅ Firebase shutdown completed');
       }
       
-      // Shutdown HTTP server last
-      if (this.httpServer) {
-        console.log('🌐 Shutting down HTTP server...');
-        await new Promise((resolve) => {
-          this.httpServer.close(resolve);
-        });
-        console.log('✅ HTTP server shutdown completed');
-      }
-      
-      // Clear timeout
+      // Clear the timeout
       if (this.shutdownTimeout) {
         clearTimeout(this.shutdownTimeout);
       }
@@ -297,54 +327,14 @@ class FerrariSystemManager {
       
     } catch (error) {
       console.error('❌ Error during graceful shutdown:', error);
-      
-      if (this.shutdownTimeout) {
-        clearTimeout(this.shutdownTimeout);
-      }
-      
       process.exit(1);
     }
   }
-
-  keepAlive() {
-    // Keep the process alive with minimal resource usage
-    const keepAliveInterval = setInterval(() => {
-      if (this.isShuttingDown) {
-        clearInterval(keepAliveInterval);
-        return;
-      }
-      
-      // Log system status every 5 minutes
-      if (Date.now() % 300000 < 1000) { // Roughly every 5 minutes
-        console.log('💓 Ferrari system heartbeat - System operational');
-        
-        // Log system stats
-        if (this.ferrariSystem) {
-          try {
-            const stats = this.ferrariSystem.getSystemStats();
-            console.log('📊 System stats:', {
-              symbolsMonitored: stats.symbolsMonitored,
-              connectedFeeds: Object.keys(stats.connectedFeeds).length,
-              uptime: Math.round(stats.uptime / 60) + ' minutes',
-              signalsGenerated: stats.signalsGenerated
-            });
-          } catch (error) {
-            console.log('📊 System stats: unavailable');
-          }
-        }
-      }
-    }, 1000);
-    
-    // Cleanup interval on shutdown
-    process.on('exit', () => {
-      clearInterval(keepAliveInterval);
-    });
-  }
 }
 
-// Start the Ferrari system
+// Create and start the system
 const manager = new FerrariSystemManager();
 manager.start().catch(error => {
-  console.error('💥 Critical startup error:', error);
+  console.error('💥 Failed to start Ferrari System Manager:', error);
   process.exit(1);
 }); 

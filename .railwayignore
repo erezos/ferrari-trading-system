@@ -1,0 +1,13 @@
+# Railway ignore file - exclude unnecessary files from deployment
+node_modules/
+.git/
+.gitignore
+*.log
+*.tmp
+.env.local
+.env.development
+README.md
+test_*.js
+*.test.js
+.DS_Store
+thumbs.db 
