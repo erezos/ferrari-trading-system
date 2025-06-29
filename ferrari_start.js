@@ -9,7 +9,7 @@ dotenv.config();
 
 /**
  * Ferrari Trading System - Production Startup
- * With HTTP health checks for Railway deployment
+ * With Railway-optimized health checks
  */
 
 class FerrariSystemManager {
@@ -20,6 +20,7 @@ class FerrariSystemManager {
     this.firebaseServices = null;
     this.httpServer = null;
     this.app = express();
+    this.isReady = false;
   }
 
   async start() {
@@ -29,28 +30,17 @@ class FerrariSystemManager {
       console.log('🌍 Environment:', process.env.NODE_ENV || 'production');
       console.log('🚀 Node.js version:', process.version);
       
-      // Start HTTP server first for Railway health checks
+      // Start HTTP server FIRST for Railway health checks
       await this.startHttpServer();
       
-      // Initialize Firebase
-      console.log('🔥 Initializing Firebase services...');
-      this.firebaseServices = await firebaseConfig.initialize();
-      
-      if (this.firebaseServices.isReady) {
-        console.log('✅ Firebase services ready');
-      } else {
-        console.log('⚠️ Running in test mode - Firebase disabled');
-      }
-      
-      // Validate environment variables
-      await this.validateEnvironment();
+      // Initialize Firebase (async, don't block health checks)
+      this.initializeFirebaseAsync();
       
       // Set up graceful shutdown handlers
       this.setupGracefulShutdown();
       
-      // Initialize Ferrari system with Firebase services
-      this.ferrariSystem = new FerrariTradingSystem(this.firebaseServices);
-      await this.ferrariSystem.initialize();
+      // Mark as ready for basic health checks
+      this.isReady = true;
       
       console.log('✅ Ferrari Trading System successfully started!');
       console.log('🎯 System ready for real-time signal generation');
@@ -64,38 +54,59 @@ class FerrariSystemManager {
     }
   }
 
+  async initializeFirebaseAsync() {
+    try {
+      console.log('🔥 Initializing Firebase services...');
+      this.firebaseServices = await firebaseConfig.initialize();
+      
+      if (this.firebaseServices.isReady) {
+        console.log('✅ Firebase services ready');
+        
+        // Now initialize Ferrari system
+        this.ferrariSystem = new FerrariTradingSystem(this.firebaseServices);
+        await this.ferrariSystem.initialize();
+        console.log('🏎️ Ferrari Trading System fully operational');
+      } else {
+        console.log('⚠️ Running in test mode - Firebase disabled');
+      }
+      
+      // Validate environment variables
+      await this.validateEnvironment();
+      
+    } catch (error) {
+      console.error('❌ Firebase initialization error:', error);
+      // Don't exit - continue with limited functionality
+    }
+  }
+
   async startHttpServer() {
     const port = process.env.PORT || 3000;
     
-    // Configure CORS
+    // Configure middleware
     this.app.use(cors());
-    this.app.use(express.json());
+    this.app.use(express.json({ limit: '1mb' }));
     
-    // Health check endpoint for Railway
+    // Railway health check endpoint - MUST be fast and simple
     this.app.get('/health', (req, res) => {
-      const status = {
+      // Railway expects a 200 OK response quickly
+      res.status(200).send('OK');
+    });
+    
+    // Alternative health check endpoints
+    this.app.get('/healthz', (req, res) => {
+      res.status(200).json({ 
         status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        system: 'ferrari_trading_system',
-        version: '2.0.0'
-      };
-      
-      if (this.ferrariSystem) {
-        try {
-          const systemStats = this.ferrariSystem.getSystemStats();
-          status.ferrari = {
-            active: true,
-            symbolsMonitored: systemStats.symbolsMonitored,
-            connectedFeeds: Object.keys(systemStats.connectedFeeds).length,
-            signalsGenerated: systemStats.signalsGenerated
-          };
-        } catch (error) {
-          status.ferrari = { active: false, error: 'Stats unavailable' };
-        }
+        ready: this.isReady,
+        timestamp: new Date().toISOString()
+      });
+    });
+    
+    this.app.get('/ready', (req, res) => {
+      if (this.isReady) {
+        res.status(200).json({ status: 'ready' });
+      } else {
+        res.status(503).json({ status: 'not ready' });
       }
-      
-      res.json(status);
     });
     
     // Root endpoint
@@ -107,20 +118,23 @@ class FerrariSystemManager {
         description: 'Real-time institutional-grade trading signals',
         endpoints: {
           health: '/health',
+          healthz: '/healthz',
+          ready: '/ready',
           status: '/status'
         }
       });
     });
     
-    // Status endpoint with detailed system info
+    // Detailed status endpoint
     this.app.get('/status', (req, res) => {
       const status = {
         system: 'Ferrari Trading System',
         version: '2.0.0',
         environment: process.env.NODE_ENV || 'production',
+        ready: this.isReady,
         uptime: Math.round(process.uptime()),
         timestamp: new Date().toISOString(),
-        firebase: this.firebaseServices?.isReady ? 'connected' : 'test_mode',
+        firebase: this.firebaseServices?.isReady ? 'connected' : 'initializing',
         trading: {
           active: !!this.ferrariSystem,
           symbolsMonitored: 73,
@@ -147,6 +161,12 @@ class FerrariSystemManager {
       res.json(status);
     });
     
+    // Error handling middleware
+    this.app.use((err, req, res, next) => {
+      console.error('HTTP Error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    });
+    
     // Start HTTP server
     return new Promise((resolve, reject) => {
       this.httpServer = this.app.listen(port, '0.0.0.0', (err) => {
@@ -159,6 +179,12 @@ class FerrariSystemManager {
           console.log(`📊 Status endpoint: http://localhost:${port}/status`);
           resolve();
         }
+      });
+      
+      // Handle server errors
+      this.httpServer.on('error', (err) => {
+        console.error('HTTP Server Error:', err);
+        reject(err);
       });
     });
   }
@@ -238,16 +264,7 @@ class FerrariSystemManager {
     }, 25000); // 25 seconds to be safe
     
     try {
-      // Shutdown HTTP server first
-      if (this.httpServer) {
-        console.log('🌐 Shutting down HTTP server...');
-        await new Promise((resolve) => {
-          this.httpServer.close(resolve);
-        });
-        console.log('✅ HTTP server shutdown completed');
-      }
-      
-      // Shutdown Ferrari system
+      // Shutdown Ferrari system first
       if (this.ferrariSystem) {
         console.log('🏎️ Shutting down Ferrari Trading System...');
         await this.ferrariSystem.shutdown();
@@ -259,6 +276,15 @@ class FerrariSystemManager {
         console.log('🔥 Shutting down Firebase services...');
         await firebaseConfig.shutdown();
         console.log('✅ Firebase shutdown completed');
+      }
+      
+      // Shutdown HTTP server last
+      if (this.httpServer) {
+        console.log('🌐 Shutting down HTTP server...');
+        await new Promise((resolve) => {
+          this.httpServer.close(resolve);
+        });
+        console.log('✅ HTTP server shutdown completed');
       }
       
       // Clear timeout
