@@ -1168,5 +1168,5 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 }
 
-// Export singleton instance
-export default new FerrariTradingSystem(); 
+// Export the class only - no automatic instance creation
+export { FerrariTradingSystem }; 
