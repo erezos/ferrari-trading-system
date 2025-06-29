@@ -263,13 +263,25 @@ export class FerrariTradingSystem extends EventEmitter {
       if (!this.state.isShuttingDown) {
         try {
           const message = JSON.parse(data);
-          console.log(`📨 Binance raw message sample:`, {
-            symbol: message.s,
-            price: message.c,
-            change: message.P,
-            volume: message.v
-          });
-          this.processBinanceMessage(message);
+          if (message.s) { // Ticker message
+            // Convert BTCUSDT back to BTC/USD format
+            const symbol = message.s.replace('USDT', '/USD').toUpperCase();
+            
+            // Only log Bitcoin-related messages to reduce spam
+            if (symbol.includes('BTC')) {
+              console.log(`🔍 Processing Binance message:`, { symbol: message.s, price: message.c, change: message.P });
+              console.log(`📈 Binance ticker: ${symbol} @ $${message.c} (${message.P}% change)`);
+            }
+            
+            this.updatePrice({
+              symbol,
+              price: parseFloat(message.c),
+              volume: parseFloat(message.v),
+              changePercent: parseFloat(message.P),
+              timestamp: message.E,
+              source: 'binance'
+            });
+          }
         } catch (error) {
           console.error('❌ Error parsing Binance message:', error, 'Raw data:', data.toString().substring(0, 200));
         }
@@ -348,24 +360,6 @@ export class FerrariTradingSystem extends EventEmitter {
       });
     } else {
       console.log(`ℹ️ Alpaca non-trade message type: ${msg.T}`);
-    }
-  }
-
-  processBinanceMessage(msg) {
-    console.log(`🔍 Processing Binance message:`, { symbol: msg.s, price: msg.c, change: msg.P });
-    if (msg.s) { // Ticker message
-      // Convert BTCUSDT back to BTC/USD format
-      const symbol = msg.s.replace('USDT', '/USD').toUpperCase();
-      console.log(`📈 Binance ticker: ${symbol} @ $${msg.c} (${msg.P}% change)`);
-      
-      this.updatePrice({
-        symbol,
-        price: parseFloat(msg.c),
-        volume: parseFloat(msg.v),
-        changePercent: parseFloat(msg.P),
-        timestamp: msg.E,
-        source: 'binance'
-      });
     }
   }
 
@@ -634,6 +628,9 @@ export class FerrariTradingSystem extends EventEmitter {
     const atr = this.calculateATR(symbolData.prices);
     const levels = this.calculateDynamicLevels(currentPrice, atr, consensusSentiment);
 
+    console.log(`🔧 DEBUG: ${symbol} | ATR: ${atr.toFixed(6)} | Price: ${currentPrice} | Sentiment: ${consensusSentiment}`);
+    console.log(`🔧 DEBUG: ${symbol} | Levels:`, JSON.stringify(levels, null, 2));
+
     return {
       symbol,
       sentiment: consensusSentiment,
@@ -759,6 +756,11 @@ export class FerrariTradingSystem extends EventEmitter {
   passesQualityGates(analysis) {
     const gates = this.config.qualityGates;
     
+    console.log(`🔧 DEBUG Quality Gates: ${analysis.symbol} | Has levels: ${!!analysis.levels} | Strength: ${analysis.finalStrength}`);
+    if (analysis.levels) {
+      console.log(`🔧 DEBUG Levels: Entry: ${analysis.levels.entry}, Stop: ${analysis.levels.stopLoss}, TP1: ${analysis.levels.takeProfit1}`);
+    }
+    
     // Minimum strength
     if (analysis.finalStrength < gates.minimumStrength) {
       return false;
@@ -777,6 +779,8 @@ export class FerrariTradingSystem extends EventEmitter {
     const risk = Math.abs(analysis.levels.entry - analysis.levels.stopLoss);
     const reward = Math.abs(analysis.levels.takeProfit1 - analysis.levels.entry);
     const riskReward = risk > 0 ? reward / risk : 0;
+    
+    console.log(`🔧 DEBUG RR: ${analysis.symbol} | Risk: ${risk.toFixed(6)} | Reward: ${reward.toFixed(6)} | RR: ${riskReward.toFixed(2)}`);
     
     if (riskReward < gates.minimumRiskReward) {
       return false;
