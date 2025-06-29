@@ -94,7 +94,9 @@ export class FerrariTradingSystem extends EventEmitter {
       websockets: new Set(),
       intervals: new Set(),
       timeouts: new Set(),
-      isShuttingDown: false
+      isShuttingDown: false,
+      dailySignalCount: 0,
+      lastSignalDate: null
     };
     
     // Initialize Firebase services
@@ -641,71 +643,119 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   calculateATR(priceHistory) {
-    if (priceHistory.length < 14) {
-      // Fallback: Use recent price volatility if we don't have enough history
-      if (priceHistory.length >= 3) {
-        const recent = priceHistory.slice(-3);
-        let volatilitySum = 0;
-        for (let i = 1; i < recent.length; i++) {
-          const change = Math.abs(recent[i].price - recent[i-1].price);
-          volatilitySum += change;
-        }
-        const avgVolatility = volatilitySum / (recent.length - 1);
-        console.log(`⚠️ ATR fallback for short history: ${avgVolatility.toFixed(6)}`);
-        return avgVolatility || 0.001; // Minimum fallback
+    if (!priceHistory || priceHistory.length < 2) {
+      return 0.001; // Minimum fallback ATR
+    }
+    
+    // Standard ATR calculation for symbols with enough data
+    if (priceHistory.length >= 14) {
+      const trueRanges = [];
+      
+      for (let i = 1; i < Math.min(priceHistory.length, 20); i++) {
+        const current = priceHistory[i];
+        const previous = priceHistory[i - 1];
+        
+        const highLow = Math.abs(current.high - current.low);
+        const highClose = Math.abs(current.high - previous.close);
+        const lowClose = Math.abs(current.low - previous.close);
+        
+        trueRanges.push(Math.max(highLow, highClose, lowClose));
       }
-      return 0.001; // Minimum fallback to prevent zero ATR
+      
+      const atr = trueRanges.reduce((sum, tr) => sum + tr, 0) / trueRanges.length;
+      
+      // Ensure minimum ATR relative to price
+      const currentPrice = priceHistory[0].close;
+      const minimumATR = currentPrice * 0.001; // 0.1% of price minimum
+      
+      return Math.max(atr, minimumATR);
     }
     
-    const recent = priceHistory.slice(-14);
-    let atrSum = 0;
+    // Fallback ATR for symbols with limited data
+    const recentPrices = priceHistory.slice(0, Math.min(priceHistory.length, 10));
+    const prices = recentPrices.map(p => p.close);
     
-    for (let i = 1; i < recent.length; i++) {
-      const high = Math.max(recent[i].price, recent[i-1].price);
-      const low = Math.min(recent[i].price, recent[i-1].price);
-      const prevClose = recent[i-1].price;
-      
-      const tr = Math.max(
-        high - low,
-        Math.abs(high - prevClose),
-        Math.abs(low - prevClose)
-      );
-      
-      atrSum += tr;
+    if (prices.length < 2) {
+      return prices[0] * 0.001; // 0.1% of price as fallback
     }
     
-    return atrSum / 13; // 14-period ATR
+    // Calculate recent volatility
+    let totalVariation = 0;
+    for (let i = 1; i < prices.length; i++) {
+      totalVariation += Math.abs(prices[i] - prices[i - 1]);
+    }
+    
+    const avgVariation = totalVariation / (prices.length - 1);
+    const currentPrice = prices[0];
+    
+    // Ensure minimum ATR (0.1% of current price)
+    const minimumATR = currentPrice * 0.001;
+    const calculatedATR = Math.max(avgVariation, minimumATR);
+    
+    console.log(`🔧 DEBUG ATR: ${priceHistory[0]?.symbol || 'Unknown'} | Calculated: ${calculatedATR.toFixed(6)} | Price: ${currentPrice} | Points: ${prices.length}`);
+    
+    return calculatedATR;
   }
 
   calculateDynamicLevels(price, atr, sentiment) {
-    const atrMultiplier = {
-      stop: 2.0,        // 2.0 ATR stop loss
-      target1: 5.0,     // 5.0 ATR take profit (5.0/2.0 = 2.5 RR)
-      target2: 8.0      // 8.0 ATR secondary target
-    };
-
-    if (sentiment === 'bullish') {
-      return {
-        entry: price,
-        stopLoss: price - (atr * atrMultiplier.stop),
-        takeProfit1: price + (atr * atrMultiplier.target1),
-        takeProfit2: price + (atr * atrMultiplier.target2)
-      };
-    } else if (sentiment === 'bearish') {
-      return {
-        entry: price,
-        stopLoss: price + (atr * atrMultiplier.stop),
-        takeProfit1: price - (atr * atrMultiplier.target1),
-        takeProfit2: price - (atr * atrMultiplier.target2)
-      };
-    } else {
-      // For neutral sentiment, use symmetric levels based on ATR
-      return {
-        entry: price,
-        stopLoss: price - (atr * atrMultiplier.stop), // Stop loss below entry
-        takeProfit1: price + (atr * atrMultiplier.target1), // Take profit above entry
-        takeProfit2: price + (atr * atrMultiplier.target2)  // Higher take profit
-      };
+    // Ensure we have valid inputs
+    if (!price || !atr || atr <= 0) {
+      console.warn(`⚠️ Invalid inputs for level calculation: price=${price}, atr=${atr}`);
+      return null;
+    }
+    
+    // Dynamic multipliers based on sentiment and volatility
+    let stopMultiplier, target1Multiplier, target2Multiplier;
+    
+    switch (sentiment) {
+      case 'bullish':
+        stopMultiplier = 2.0;    // Stop below entry
+        target1Multiplier = 5.0; // Target above entry (RR = 5.0/2.0 = 2.5)
+        target2Multiplier = 8.0; // Extended target
+        
+        return {
+          entry: price,
+          stopLoss: price - (atr * stopMultiplier),
+          takeProfit1: price + (atr * target1Multiplier),
+          takeProfit2: price + (atr * target2Multiplier)
+        };
+        
+      case 'bearish':
+        stopMultiplier = 2.0;    // Stop above entry
+        target1Multiplier = 5.0; // Target below entry (RR = 5.0/2.0 = 2.5)
+        target2Multiplier = 8.0; // Extended target
+        
+        return {
+          entry: price,
+          stopLoss: price + (atr * stopMultiplier),
+          takeProfit1: price - (atr * target1Multiplier),
+          takeProfit2: price - (atr * target2Multiplier)
+        };
+        
+      case 'neutral':
+        // For neutral, create a small range trade setup
+        stopMultiplier = 2.0;
+        target1Multiplier = 5.0;
+        target2Multiplier = 8.0;
+        
+        // Randomly choose direction for neutral (or use price momentum)
+        const direction = Math.random() > 0.5 ? 1 : -1;
+        
+        return {
+          entry: price,
+          stopLoss: price - (direction * atr * stopMultiplier),
+          takeProfit1: price + (direction * atr * target1Multiplier),
+          takeProfit2: price + (direction * atr * target2Multiplier)
+        };
+        
+      default:
+        console.warn(`⚠️ Unknown sentiment: ${sentiment}, defaulting to neutral`);
+        return {
+          entry: price,
+          stopLoss: price - (atr * 2.0),
+          takeProfit1: price + (atr * 5.0),
+          takeProfit2: price + (atr * 8.0)
+        };
     }
   }
 
@@ -800,8 +850,9 @@ export class FerrariTradingSystem extends EventEmitter {
     // ALWAYS set riskRewardRatio for debug purposes
     analysis.riskRewardRatio = riskReward;
     
-    // Check if RR meets minimum requirement
-    if (riskReward < gates.minimumRiskReward) {
+    // Check if RR meets minimum requirement (with small tolerance for floating point precision)
+    const tolerance = 0.001;
+    if (riskReward < (gates.minimumRiskReward - tolerance)) {
       return false;
     }
     
@@ -836,6 +887,16 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async getEligibleUsers(analysis) {
+    // Check global daily signal limit first
+    const today = new Date().toDateString();
+    const todaySignals = this.state.dailySignalCount || 0;
+    const maxDailySignals = this.config.rateLimiting.maxDailyTips || 5;
+    
+    if (todaySignals >= maxDailySignals) {
+      console.log(`⚠️ Daily signal limit reached (${todaySignals}/${maxDailySignals})`);
+      return [];
+    }
+    
     // Firebase null safety check
     if (!this.firebaseReady || !this.db) {
       console.log('⚠️ Test mode: Returning mock eligible users for', analysis.symbol);
@@ -854,7 +915,7 @@ export class FerrariTradingSystem extends EventEmitter {
     }
     
     try {
-      // Get all users
+      // Get all users - send signal to ALL users (global limit, not per-user)
       const usersSnapshot = await this.db.collection('users').get();
       const eligibleUsers = [];
       
@@ -862,16 +923,15 @@ export class FerrariTradingSystem extends EventEmitter {
         const userId = userDoc.id;
         const userData = userDoc.data();
         
-        // Check rate limits
-        if (await this.canUserReceiveSignal(userId, analysis)) {
-          eligibleUsers.push({
-            userId,
-            preferences: userData.preferences || {},
-            timezone: userData.timezone || 'UTC'
-          });
-        }
+        // Add all users since we're using global daily limits
+        eligibleUsers.push({
+          userId,
+          preferences: userData.preferences || {},
+          timezone: userData.timezone || 'UTC'
+        });
       }
       
+      console.log(`✅ Found ${eligibleUsers.length} eligible users for ${analysis.symbol} signal`);
       return eligibleUsers;
     } catch (error) {
       console.error('❌ Error getting eligible users:', error);
@@ -1175,22 +1235,43 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async updateUserLimits(eligibleUsers, tip) {
-    const now = Date.now();
+    // Track global daily signal count
+    const today = new Date().toDateString();
     
-    eligibleUsers.forEach(user => {
+    // Reset daily count if new day
+    if (this.state.lastSignalDate !== today) {
+      this.state.dailySignalCount = 0;
+      this.state.lastSignalDate = today;
+    }
+    
+    // Increment global signal count
+    this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
+    
+    console.log(`📊 Global signal count: ${this.state.dailySignalCount}/${this.config.rateLimiting.maxDailyTips} for ${today}`);
+    
+    // Update per-user tracking for analytics (optional)
+    for (const user of eligibleUsers) {
       const userLimits = this.state.userLimits.get(user.userId) || {
         dailyCount: 0,
         hourlyCount: 0,
         lastSignal: 0,
-        lastReset: new Date().toDateString()
+        lastReset: today
       };
       
+      // Reset if new day
+      if (userLimits.lastReset !== today) {
+        userLimits.dailyCount = 0;
+        userLimits.hourlyCount = 0;
+        userLimits.lastReset = today;
+      }
+      
+      // Update counts for analytics
       userLimits.dailyCount++;
       userLimits.hourlyCount++;
-      userLimits.lastSignal = now;
+      userLimits.lastSignal = Date.now();
       
       this.state.userLimits.set(user.userId, userLimits);
-    });
+    }
   }
 
   getSystemStats() {
@@ -1283,11 +1364,19 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   resetDailyLimits() {
-    console.log('🔄 Resetting daily rate limits');
-    this.state.userLimits.forEach(limits => {
+    console.log('🔄 Resetting daily limits (new day started)');
+    
+    // Reset global daily signal count
+    this.state.dailySignalCount = 0;
+    this.state.lastSignalDate = new Date().toDateString();
+    
+    // Reset all user daily limits
+    for (const [userId, limits] of this.state.userLimits) {
       limits.dailyCount = 0;
       limits.lastReset = new Date().toDateString();
-    });
+    }
+    
+    console.log('✅ Daily limits reset for all users and global signal count');
   }
 
   updatePerformanceMetrics() {
