@@ -9,7 +9,7 @@ dotenv.config();
 
 /**
  * Ferrari Trading System - Production Startup
- * With Railway-optimized health checks and startup sequence
+ * With Railway-optimized health checks and memory management
  */
 
 class FerrariSystemManager {
@@ -23,6 +23,8 @@ class FerrariSystemManager {
     this.isReady = false;
     this.startupStartTime = Date.now();
     this.isRailway = process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID;
+    this.memoryMonitorInterval = null;
+    this.lastMemoryWarning = 0;
   }
 
   async start() {
@@ -35,7 +37,15 @@ class FerrariSystemManager {
       if (this.isRailway) {
         console.log('🚂 Running on Railway platform');
         console.log('📦 Railway service:', process.env.RAILWAY_SERVICE_NAME || 'unknown');
+        
+        // Set Node.js memory optimization for Railway
+        if (process.env.NODE_OPTIONS) {
+          console.log('🧠 Node options:', process.env.NODE_OPTIONS);
+        }
       }
+
+      // Start memory monitoring for Railway
+      this.startMemoryMonitoring();
 
       // Start HTTP server first for Railway health checks
       await this.startHttpServer();
@@ -58,6 +68,72 @@ class FerrariSystemManager {
     }
   }
 
+  startMemoryMonitoring() {
+    if (!this.isRailway) return;
+    
+    console.log('🧠 Starting memory monitoring for Railway...');
+    
+    // Monitor memory every 30 seconds
+    this.memoryMonitorInterval = setInterval(() => {
+      const memUsage = process.memoryUsage();
+      const memUsageMB = {
+        rss: Math.round(memUsage.rss / 1024 / 1024),
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        external: Math.round(memUsage.external / 1024 / 1024)
+      };
+      
+      // Log memory usage every 5 minutes or if memory is high
+      const now = Date.now();
+      const memoryHigh = memUsageMB.rss > 800; // Above 800MB
+      
+      if (memoryHigh || (now - this.lastMemoryWarning) > 300000) { // 5 minutes
+        console.log('🧠 Memory usage:', memUsageMB, 'MB');
+        
+        if (memoryHigh) {
+          console.warn('⚠️ High memory usage detected:', memUsageMB.rss, 'MB RSS');
+          this.lastMemoryWarning = now;
+          
+          // Force garbage collection if available
+          if (global.gc) {
+            console.log('🗑️ Running garbage collection...');
+            global.gc();
+          }
+        }
+        
+        // Update last log time
+        if (!memoryHigh) {
+          this.lastMemoryWarning = now;
+        }
+      }
+      
+      // Emergency memory cleanup if approaching limits
+      if (memUsageMB.rss > 1200) { // Above 1.2GB
+        console.error('🚨 Critical memory usage:', memUsageMB.rss, 'MB - initiating emergency cleanup');
+        this.emergencyMemoryCleanup();
+      }
+      
+    }, 30000); // Every 30 seconds
+  }
+
+  emergencyMemoryCleanup() {
+    try {
+      // Force garbage collection
+      if (global.gc) {
+        global.gc();
+        console.log('✅ Emergency garbage collection completed');
+      }
+      
+      // Log memory after cleanup
+      const memUsage = process.memoryUsage();
+      const memUsageMB = Math.round(memUsage.rss / 1024 / 1024);
+      console.log('🧠 Memory after cleanup:', memUsageMB, 'MB RSS');
+      
+    } catch (error) {
+      console.error('❌ Emergency memory cleanup failed:', error);
+    }
+  }
+
   async startHttpServer() {
     const port = process.env.PORT || 3000;
     
@@ -75,6 +151,7 @@ class FerrariSystemManager {
     this.app.get('/healthz', (req, res) => {
       const uptime = process.uptime();
       const startupTime = Date.now() - this.startupStartTime;
+      const memUsage = process.memoryUsage();
       
       const status = {
         status: 'healthy',
@@ -84,7 +161,13 @@ class FerrariSystemManager {
         system: 'ferrari_trading_system',
         version: '2.0.0',
         railway: !!this.isRailway,
-        ready: this.isReady
+        ready: this.isReady,
+        memory: {
+          rss: Math.round(memUsage.rss / 1024 / 1024),
+          heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+          heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+          external: Math.round(memUsage.external / 1024 / 1024)
+        }
       };
       
       if (this.ferrariSystem) {
@@ -141,6 +224,7 @@ class FerrariSystemManager {
     // Status endpoint with comprehensive information
     this.app.get('/status', async (req, res) => {
       try {
+        const memUsage = process.memoryUsage();
         const status = {
           service: 'Ferrari Trading System v2.0',
           timestamp: new Date().toISOString(),
@@ -152,7 +236,12 @@ class FerrariSystemManager {
             railway: !!this.isRailway,
             env: process.env.NODE_ENV || 'development'
           },
-          memory: process.memoryUsage(),
+          memory: {
+            rss: Math.round(memUsage.rss / 1024 / 1024),
+            heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+            heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+            external: Math.round(memUsage.external / 1024 / 1024)
+          },
           firebase: {
             initialized: !!this.firebaseServices,
             ready: !!this.firebaseServices
@@ -292,6 +381,12 @@ class FerrariSystemManager {
     }, 25000); // 25 seconds to allow Railway's 30-second limit
     
     try {
+      // Stop memory monitoring
+      if (this.memoryMonitorInterval) {
+        clearInterval(this.memoryMonitorInterval);
+        console.log('🧠 Memory monitoring stopped');
+      }
+      
       // Shutdown HTTP server first
       if (this.httpServer) {
         console.log('🌐 Shutting down HTTP server...');
