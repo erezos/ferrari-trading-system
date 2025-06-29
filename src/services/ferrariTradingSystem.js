@@ -298,51 +298,60 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   updatePrice(priceData) {
-    const { symbol, price, volume, timestamp } = priceData;
-    
-    // Validate price data
-    if (!symbol || !price || price <= 0) {
-      console.warn(`⚠️ Invalid price data for ${symbol}:`, priceData);
-      return;
-    }
-    
-    // Get or create price history
-    let symbolData = this.state.priceCache.get(symbol) || {
-      currentPrice: 0,
-      previousPrice: 0,
-      priceHistory: [],
-      volumeHistory: [],
-      lastAnalysis: 0,
-      signalCooldown: 0,
-      lastUpdate: 0
-    };
+    try {
+      const { symbol, price, timestamp, volume, change, changePercent } = priceData;
+      
+      // Log significant price movements (>2% change)
+      if (Math.abs(changePercent) >= 2.0) {
+        console.log(`📈 SIGNIFICANT MOVE: ${symbol} ${changePercent > 0 ? '↑' : '↓'} ${changePercent.toFixed(2)}% → $${price}`);
+      }
+      
+      // Update price cache
+      if (!this.state.priceCache.has(symbol)) {
+        this.state.priceCache.set(symbol, {
+          prices: [],
+          lastUpdate: timestamp,
+          volume: volume || 0,
+          change: change || 0,
+          changePercent: changePercent || 0
+        });
+      }
 
-    // Update price data
-    symbolData.previousPrice = symbolData.currentPrice;
-    symbolData.currentPrice = price;
-    symbolData.lastUpdate = timestamp || Date.now();
-    
-    // Add to history (keep last 100 data points for memory efficiency)
-    symbolData.priceHistory.push({ price, timestamp: symbolData.lastUpdate });
-    if (volume) {
-      symbolData.volumeHistory.push({ volume, timestamp: symbolData.lastUpdate });
+      const symbolData = this.state.priceCache.get(symbol);
+      
+      // Add new price point
+      symbolData.prices.push({
+        price: parseFloat(price),
+        timestamp: timestamp || Date.now(),
+        volume: volume || 0
+      });
+      
+      // Keep only last 100 price points for analysis
+      if (symbolData.prices.length > 100) {
+        symbolData.prices = symbolData.prices.slice(-100);
+      }
+      
+      // Update metadata
+      symbolData.lastUpdate = timestamp || Date.now();
+      symbolData.currentPrice = parseFloat(price);
+      symbolData.volume = volume || 0;
+      symbolData.change = change || 0;
+      symbolData.changePercent = changePercent || 0;
+      
+      // Log every 50th price update to show system activity
+      this.state.priceUpdateCounter = (this.state.priceUpdateCounter || 0) + 1;
+      if (this.state.priceUpdateCounter % 50 === 0) {
+        console.log(`📊 Price updates processed: ${this.state.priceUpdateCounter} | Active symbols: ${this.state.priceCache.size}`);
+      }
+      
+      // Check for trading opportunities (only if we have enough data)
+      if (symbolData.prices.length >= 20) {
+        this.checkTradingOpportunity(symbol, symbolData);
+      }
+      
+    } catch (error) {
+      console.error('❌ Error updating price:', error);
     }
-    
-    // Maintain memory limits
-    if (symbolData.priceHistory.length > 100) {
-      symbolData.priceHistory.shift();
-    }
-    if (symbolData.volumeHistory.length > 100) {
-      symbolData.volumeHistory.shift();
-    }
-
-    this.state.priceCache.set(symbol, symbolData);
-
-    // Clean up stale entries (older than 24 hours) to prevent memory leaks
-    this.cleanupStaleData();
-
-    // Check for trading opportunities
-    this.checkTradingOpportunity(symbol, symbolData);
   }
 
   cleanupStaleData() {
@@ -361,40 +370,45 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async checkTradingOpportunity(symbol, symbolData) {
-    const now = Date.now();
-    
-    // Respect cooldown period
-    if (now < symbolData.signalCooldown) return;
-    
-    // Don't analyze too frequently (max once per minute)
-    if (now - symbolData.lastAnalysis < 60000) return;
-    
-    symbolData.lastAnalysis = now;
-
     try {
-      console.log(`🔍 Analyzing ${symbol} - Price: ${symbolData.currentPrice}`);
+      // Rate limiting: Don't analyze the same symbol too frequently
+      const now = Date.now();
+      const lastAnalysis = symbolData.lastAnalysis || 0;
+      const analysisInterval = 30000; // 30 seconds minimum between analyses
       
-      // Multi-timeframe analysis
+      if (now - lastAnalysis < analysisInterval) {
+        return;
+      }
+      
+      // Log analysis trigger
+      console.log(`🔍 ANALYZING: ${symbol} | Price: $${symbolData.currentPrice} | Change: ${(symbolData.changePercent || 0).toFixed(2)}%`);
+      
+      symbolData.lastAnalysis = now;
+      
+      // Skip if in signal cooldown (prevent spam)
+      if (symbolData.signalCooldown && now < symbolData.signalCooldown) {
+        const cooldownRemaining = Math.round((symbolData.signalCooldown - now) / 60000);
+        console.log(`⏰ ${symbol} in cooldown for ${cooldownRemaining} more minutes`);
+        return;
+      }
+      
+      // Perform comprehensive analysis
       const analysis = await this.performComprehensiveAnalysis(symbol, symbolData);
       
       if (analysis) {
-        console.log(`📊 Analysis for ${symbol}: ${analysis.sentiment} strength: ${analysis.strength}`);
+        console.log(`📊 ANALYSIS COMPLETE: ${symbol} | Strength: ${analysis.strength}/5.0 | Sentiment: ${analysis.sentiment.toUpperCase()}`);
         
+        // Check if it passes quality gates
         if (this.passesQualityGates(analysis)) {
-          console.log(`✅ ${symbol} passes quality gates - generating signal!`);
+          console.log(`✅ QUALITY GATES PASSED: ${symbol} | Generating signal...`);
           await this.generateSignal(analysis);
-          
-          // Set cooldown
-          symbolData.signalCooldown = now + this.config.qualityGates.cooldownPeriod;
         } else {
-          console.log(`❌ ${symbol} failed quality gates - strength: ${analysis.strength}, required: ${this.config.qualityGates.minimumStrength}`);
+          console.log(`❌ Quality gates failed: ${symbol} | Strength: ${analysis.strength} | RR: ${analysis.riskReward}`);
         }
-      } else {
-        console.log(`⚠️ No analysis returned for ${symbol}`);
       }
       
     } catch (error) {
-      console.error(`❌ Analysis error for ${symbol}:`, error);
+      console.error(`❌ Error checking trading opportunity for ${symbol}:`, error);
     }
   }
 
@@ -420,7 +434,7 @@ export class FerrariTradingSystem extends EventEmitter {
         console.log(`🏛️ Running institutional analysis for ${symbol}`);
         institutionalAnalysis = await institutionalAnalysisService.performInstitutionalAnalysis(
           symbol, 
-          symbolData.priceHistory, 
+          symbolData.prices, 
           '1h'
         );
         console.log(`✅ Institutional analysis complete for ${symbol}: ${institutionalAnalysis.sentiment} (${institutionalAnalysis.compositeScore.toFixed(2)})`);
@@ -520,11 +534,11 @@ export class FerrariTradingSystem extends EventEmitter {
 
     // Current price and levels
     const currentPrice = symbolData.currentPrice;
-    const priceChange = symbolData.currentPrice - symbolData.previousPrice;
-    const priceChangePercent = (priceChange / symbolData.previousPrice) * 100;
+    const priceChange = symbolData.currentPrice - symbolData.prices[symbolData.prices.length - 2].price;
+    const priceChangePercent = (priceChange / symbolData.prices[symbolData.prices.length - 2].price) * 100;
 
     // Calculate dynamic levels
-    const atr = this.calculateATR(symbolData.priceHistory);
+    const atr = this.calculateATR(symbolData.prices);
     const levels = this.calculateDynamicLevels(currentPrice, atr, consensusSentiment);
 
     return {
@@ -596,8 +610,8 @@ export class FerrariTradingSystem extends EventEmitter {
       const spyData = this.state.priceCache.get('SPY');
       
       let marketTrend = 'neutral';
-      if (spyData && spyData.priceHistory.length > 5) {
-        const recentPrices = spyData.priceHistory.slice(-5);
+      if (spyData && spyData.prices.length > 5) {
+        const recentPrices = spyData.prices.slice(-5);
         const firstPrice = recentPrices[0].price;
         const lastPrice = recentPrices[recentPrices.length - 1].price;
         const change = ((lastPrice - firstPrice) / firstPrice) * 100;
