@@ -496,7 +496,7 @@ export class FerrariTradingSystem extends EventEmitter {
           console.log(`✅ QUALITY GATES PASSED: ${symbol} | Generating signal...`);
           await this.generateSignal(analysis);
         } else {
-          console.log(`❌ Quality gates failed: ${symbol} | Strength: ${analysis.strength} | RR: ${analysis.riskReward}`);
+          console.log(`❌ Quality gates failed: ${symbol} | Strength: ${analysis.finalStrength} | RR: ${analysis.riskRewardRatio || 'undefined'}`);
         }
       }
       
@@ -761,6 +761,15 @@ export class FerrariTradingSystem extends EventEmitter {
     
     // Minimum strength
     if (analysis.finalStrength < gates.minimumStrength) {
+      return false;
+    }
+    
+    // Ensure levels exist
+    if (!analysis.levels || 
+        analysis.levels.entry === undefined || 
+        analysis.levels.stopLoss === undefined || 
+        analysis.levels.takeProfit1 === undefined) {
+      console.warn(`⚠️ Missing trading levels for ${analysis.symbol}`);
       return false;
     }
     

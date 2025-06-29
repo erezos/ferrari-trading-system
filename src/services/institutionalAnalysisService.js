@@ -506,44 +506,57 @@ class InstitutionalAnalysisService {
    * Generate institutional-grade reasoning
    */
   generateInstitutionalReasoning(symbol, analysis) {
-    const reasoning = [];
-    const { factors, composite } = analysis;
+    try {
+      const reasoning = [];
+      const { momentum, sentiment, insider, technical, fundamental, flow, composite } = analysis;
 
-    reasoning.push(`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - ${composite.sentiment.toUpperCase()} (${composite.score.toFixed(2)})`);
+      // Ensure composite exists
+      if (!composite) {
+        console.warn(`⚠️ Missing composite analysis for ${symbol}`);
+        return [`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - Limited data available`];
+      }
 
-    // Momentum analysis
-    if (factors.momentum.confidence > 50) {
-      reasoning.push(`📈 MOMENTUM: ${factors.momentum.score.toFixed(2)} - Multi-timeframe consistency ${factors.momentum.consistency.toFixed(1)}%`);
+      reasoning.push(`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - ${composite.sentiment.toUpperCase()} (${composite.score.toFixed(2)})`);
+
+      // Momentum analysis
+      if (momentum && momentum.confidence && momentum.confidence > 50 && momentum.score !== undefined && momentum.consistency !== undefined) {
+        reasoning.push(`📈 MOMENTUM: ${momentum.score.toFixed(2)} - Multi-timeframe consistency ${momentum.consistency.toFixed(1)}%`);
+      }
+
+      // Sentiment analysis  
+      if (sentiment && sentiment.newsCount && sentiment.newsCount > 0) {
+        reasoning.push(`📰 SENTIMENT: ${sentiment.score.toFixed(2)} - ${sentiment.newsCount} articles (${sentiment.bullishCount}B/${sentiment.bearishCount}B)`);
+      }
+
+      // Insider activity
+      if (insider && insider.transactionCount && insider.transactionCount > 0 && insider.mspr !== undefined) {
+        reasoning.push(`👔 INSIDER: MSPR ${insider.mspr.toFixed(3)} - ${insider.transactionCount} transactions`);
+      }
+
+      // Technical factors
+      if (technical && technical.confidence && technical.confidence > 50 && technical.indicators && technical.indicators.rsi !== undefined && technical.indicators.macd) {
+        reasoning.push(`🔧 TECHNICAL: ${technical.score.toFixed(2)} - RSI:${technical.indicators.rsi.toFixed(1)} MACD:${technical.indicators.macd.macd > technical.indicators.macd.signal ? 'Bull' : 'Bear'}`);
+      }
+
+      // Fundamental analysis
+      if (fundamental && fundamental.confidence && fundamental.confidence > 50 && fundamental.metrics) {
+        reasoning.push(`💰 FUNDAMENTAL: ${fundamental.score.toFixed(2)} - PE:${fundamental.metrics.pe?.toFixed(1) || 'N/A'} ROE:${fundamental.metrics.roe?.toFixed(1) || 'N/A'}%`);
+      }
+
+      // Order flow
+      if (flow && flow.confidence && flow.confidence > 50 && flow.buyPressure !== undefined && flow.sellPressure !== undefined) {
+        reasoning.push(`💹 ORDER FLOW: ${flow.score.toFixed(2)} - Buy:${flow.buyPressure.toFixed(3)} Sell:${flow.sellPressure.toFixed(3)}`);
+      }
+
+      if (composite.confidence !== undefined && composite.validFactors !== undefined) {
+        reasoning.push(`🎯 COMPOSITE CONFIDENCE: ${composite.confidence.toFixed(1)}% (${composite.validFactors} factors)`);
+      }
+
+      return reasoning;
+    } catch (error) {
+      console.error(`❌ Error generating institutional reasoning for ${symbol}:`, error);
+      return [`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - Analysis completed with limited reasoning`];
     }
-
-    // Sentiment analysis  
-    if (factors.sentiment.newsCount > 0) {
-      reasoning.push(`📰 SENTIMENT: ${factors.sentiment.score.toFixed(2)} - ${factors.sentiment.newsCount} articles (${factors.sentiment.bullishCount}B/${factors.sentiment.bearishCount}B)`);
-    }
-
-    // Insider activity
-    if (factors.insider.transactionCount > 0) {
-      reasoning.push(`👔 INSIDER: MSPR ${factors.insider.mspr.toFixed(3)} - ${factors.insider.transactionCount} transactions`);
-    }
-
-    // Technical factors
-    if (factors.technical.confidence > 50) {
-      reasoning.push(`🔧 TECHNICAL: ${factors.technical.score.toFixed(2)} - RSI:${factors.technical.indicators.rsi.toFixed(1)} MACD:${factors.technical.indicators.macd.macd > factors.technical.indicators.macd.signal ? 'Bull' : 'Bear'}`);
-    }
-
-    // Fundamental analysis
-    if (factors.fundamental.confidence > 50) {
-      reasoning.push(`💰 FUNDAMENTAL: ${factors.fundamental.score.toFixed(2)} - PE:${factors.fundamental.metrics.pe?.toFixed(1) || 'N/A'} ROE:${factors.fundamental.metrics.roe?.toFixed(1) || 'N/A'}%`);
-    }
-
-    // Order flow
-    if (factors.flow.confidence > 50) {
-      reasoning.push(`💹 ORDER FLOW: ${factors.flow.score.toFixed(2)} - Buy:${factors.flow.buyPressure.toFixed(3)} Sell:${factors.flow.sellPressure.toFixed(3)}`);
-    }
-
-    reasoning.push(`🎯 COMPOSITE CONFIDENCE: ${composite.confidence.toFixed(1)}% (${composite.validFactors} factors)`);
-
-    return reasoning;
   }
 
   // Helper methods for calculations
