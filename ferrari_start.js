@@ -521,9 +521,14 @@ class FerrariSystemManager {
       // Stop Firebase services
       if (this.firebaseServices) {
         this.logWithTimestamp('🔥 Shutting down Firebase services...');
-        await this.firebaseServices.shutdown();
-        shutdownSteps.push('Firebase shutdown');
-        this.logWithTimestamp('✅ Firebase shutdown completed');
+        try {
+          await firebaseConfig.shutdown();
+          shutdownSteps.push('Firebase shutdown');
+          this.logWithTimestamp('✅ Firebase shutdown completed');
+        } catch (error) {
+          this.logWithTimestamp('⚠️ Firebase shutdown error (non-critical):', error.message);
+          shutdownSteps.push('Firebase shutdown (with errors)');
+        }
       }
 
       this.logWithTimestamp('🎯 Graceful shutdown completed successfully');
