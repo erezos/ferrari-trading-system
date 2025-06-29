@@ -32,71 +32,59 @@ class FerrariSystemManager {
 
   async start() {
     try {
-      this.logWithTimestamp('🏎️ Ferrari Trading System v2.0 - Starting...');
-      this.logWithTimestamp('📅 Started at:', new Date().toISOString());
-      this.logWithTimestamp('🌍 Environment:', process.env.NODE_ENV || 'development');
-      this.logWithTimestamp('🚀 Node.js version:', process.version);
-      
-      // Log all Railway environment variables for debugging
-      if (this.isRailway) {
-        this.logWithTimestamp('🚂 Running on Railway platform');
-        this.logWithTimestamp('📦 Railway service:', process.env.RAILWAY_SERVICE_NAME || 'unknown');
-        this.logWithTimestamp('🔧 Railway environment variables:');
-        Object.keys(process.env).filter(key => key.startsWith('RAILWAY')).forEach(key => {
-          this.logWithTimestamp(`   ${key}:`, process.env[key]);
-        });
-        
-        // Log Node.js settings
-        if (process.env.NODE_OPTIONS) {
-          this.logWithTimestamp('🧠 Node options:', process.env.NODE_OPTIONS);
-        }
-      }
+      this.logWithTimestamp('🚀 Ferrari Trading System starting...');
+      this.logWithTimestamp('📊 Node.js version:', process.version);
+      this.logWithTimestamp('🖥️  Platform:', process.platform);
+      this.logWithTimestamp('🏗️  Architecture:', process.arch);
+      this.logWithTimestamp('💾 Memory limit:', process.env.NODE_OPTIONS || 'default');
 
-      // Log process information
-      this.logWithTimestamp('🔍 Process information:');
-      this.logWithTimestamp('   PID:', process.pid);
-      this.logWithTimestamp('   Platform:', process.platform);
-      this.logWithTimestamp('   Architecture:', process.arch);
-      this.logWithTimestamp('   Memory limit:', process.env.NODE_OPTIONS || 'default');
+      // Set startup phase
+      this.startupPhase = 'INITIALIZING';
 
+      // Start HTTP server first
       this.startupPhase = 'HTTP_SERVER';
       this.logWithTimestamp('📡 Phase: Starting HTTP server...');
+      await this.startHttpServer();
 
-      // Start memory monitoring for Railway
+      // Start monitoring systems
       this.startMemoryMonitoring();
-
-      // Start heartbeat logging
       this.startHeartbeat();
 
-      // Start HTTP server first for Railway health checks
-      await this.startHttpServer();
-      
+      // Initialize Firebase
       this.startupPhase = 'FIREBASE';
       this.logWithTimestamp('📡 Phase: Initializing Firebase...');
-      
-      // Initialize Firebase services
       await this.initializeFirebaseServices();
-      
+
+      // Setup graceful shutdown
       this.startupPhase = 'SHUTDOWN_HANDLERS';
       this.logWithTimestamp('📡 Phase: Setting up shutdown handlers...');
-      
-      // Set up graceful shutdown handlers
       this.setupGracefulShutdown();
-      
+
+      // Initialize Ferrari system
       this.startupPhase = 'FERRARI_SYSTEM';
       this.logWithTimestamp('📡 Phase: Initializing Ferrari system...');
-      
-      // Initialize Ferrari system (async, don't block health checks)
-      this.initializeFerrariSystemAsync();
-      
+      await this.initializeFerrariSystemAsync();
+
+      // Mark as completed
       this.startupPhase = 'COMPLETED';
-      this.logWithTimestamp('✅ Ferrari Trading System successfully started!');
-      this.logWithTimestamp('🎯 System ready for real-time signal generation');
-      this.logWithTimestamp('⏱️ Total startup time:', Date.now() - this.startupStartTime, 'ms');
-      
+      const totalTime = Date.now() - this.startupStartTime;
+      this.logWithTimestamp('⏱️ Total startup time:', totalTime, 'ms');
+
+      // Railway-specific: Trigger initial health check
+      if (this.isRailway) {
+        this.logWithTimestamp('🚂 Railway detected - triggering self health check...');
+        setTimeout(() => {
+          this.triggerSelfHealthCheck();
+        }, 2000);
+      }
+
+      this.logWithTimestamp('✅ Ferrari Trading System ACTIVE');
+      this.logWithTimestamp('🎯 Delivering only the best 5 signals per day per user');
+
     } catch (error) {
       this.logWithTimestamp('❌ Failed to start Ferrari Trading System:', error);
-      process.exit(1);
+      this.logWithTimestamp('📊 Error stack:', error.stack);
+      throw error;
     }
   }
 
@@ -217,6 +205,9 @@ class FerrariSystemManager {
 
     // Railway health check - MUST be fast and simple
     this.app.get('/health', (req, res) => {
+      // Increment health check counter
+      this.railwayHealthCheckCount++;
+      
       const response = {
         status: 'OK',
         timestamp: new Date().toISOString(),
@@ -225,7 +216,16 @@ class FerrariSystemManager {
         ready: this.isReady
       };
       
-      this.logWithTimestamp('🏥 Health check response:', JSON.stringify(response));
+      this.logWithTimestamp('🏥 Health check #' + this.railwayHealthCheckCount + ':', JSON.stringify(response));
+      
+      // Set proper headers for Railway
+      res.set({
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      });
+      
       res.status(200).json(response);
     });
 
@@ -477,71 +477,99 @@ class FerrariSystemManager {
   }
 
   async gracefulShutdown(signal) {
-    if (this.isShuttingDown) {
-      this.logWithTimestamp('⏳ Shutdown already in progress...');
-      return;
-    }
-    
-    this.isShuttingDown = true;
-    this.logWithTimestamp(`🛑 Initiating graceful shutdown (signal: ${signal})`);
-    this.logWithTimestamp('⏱️ System uptime at shutdown:', process.uptime().toFixed(2), 'seconds');
+    this.logWithTimestamp('📨 Received', signal, 'signal');
+    this.logWithTimestamp('🛑 Initiating graceful shutdown (signal: ' + signal + ')');
+    this.logWithTimestamp('🕐 Signal received at uptime:', process.uptime().toFixed(2), 'seconds');
+    this.logWithTimestamp('🔍 Current phase:', this.startupPhase);
     this.logWithTimestamp('📊 Health checks received:', this.railwayHealthCheckCount);
-    
-    // Set a maximum shutdown time
-    this.shutdownTimeout = setTimeout(() => {
-      this.logWithTimestamp('⏰ Shutdown timeout reached, forcing exit');
-      process.exit(1);
-    }, 25000); // 25 seconds to allow Railway's 30-second limit
-    
+
+    let shutdownSteps = [];
+
     try {
-      // Stop heartbeat
-      if (this.heartbeatInterval) {
-        clearInterval(this.heartbeatInterval);
-        this.logWithTimestamp('💓 Heartbeat monitoring stopped');
-      }
-      
       // Stop memory monitoring
       if (this.memoryMonitorInterval) {
         clearInterval(this.memoryMonitorInterval);
+        this.memoryMonitorInterval = null;
+        shutdownSteps.push('Memory monitoring stopped');
         this.logWithTimestamp('🧠 Memory monitoring stopped');
       }
-      
-      // Shutdown HTTP server first
+
+      // Stop HTTP server
       if (this.httpServer) {
         this.logWithTimestamp('🌐 Shutting down HTTP server...');
         await new Promise((resolve) => {
           this.httpServer.close(() => {
+            shutdownSteps.push('HTTP server shutdown');
             this.logWithTimestamp('✅ HTTP server shutdown completed');
             resolve();
           });
         });
       }
-      
-      // Shutdown Ferrari system
+
+      // Stop Ferrari system
       if (this.ferrariSystem) {
         this.logWithTimestamp('🏎️ Shutting down Ferrari Trading System...');
         await this.ferrariSystem.shutdown();
+        shutdownSteps.push('Ferrari system shutdown');
         this.logWithTimestamp('✅ Ferrari system shutdown completed');
       }
-      
-      // Shutdown Firebase services
+
+      // Stop Firebase services
       if (this.firebaseServices) {
         this.logWithTimestamp('🔥 Shutting down Firebase services...');
-        await firebaseConfig.shutdown();
+        await this.firebaseServices.shutdown();
+        shutdownSteps.push('Firebase shutdown');
         this.logWithTimestamp('✅ Firebase shutdown completed');
       }
-      
-      // Clear the timeout
-      if (this.shutdownTimeout) {
-        clearTimeout(this.shutdownTimeout);
-      }
-      
+
       this.logWithTimestamp('🎯 Graceful shutdown completed successfully');
-      process.exit(0);
-      
+      this.logWithTimestamp('📋 Shutdown steps completed:', shutdownSteps.join(', '));
+
     } catch (error) {
       this.logWithTimestamp('❌ Error during graceful shutdown:', error);
-      process.exit(1);
+    }
+
+    // Force exit after a delay
+    setTimeout(() => {
+      this.logWithTimestamp('🔴 Force exit after graceful shutdown timeout');
+      process.exit(0);
+    }, 5000);
+  }
+
+  // Railway-specific: Trigger self health check to help Railway detect service
+  triggerSelfHealthCheck() {
+    try {
+      const http = require('http');
+      const options = {
+        hostname: 'localhost',
+        port: 3000,
+        path: '/health',
+        method: 'GET',
+        timeout: 5000
+      };
+
+      const req = http.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          this.logWithTimestamp('🚂 Self health check completed:', res.statusCode, data);
+        });
+      });
+
+      req.on('error', (error) => {
+        this.logWithTimestamp('🚂 Self health check failed:', error.message);
+      });
+
+      req.on('timeout', () => {
+        this.logWithTimestamp('🚂 Self health check timeout');
+        req.destroy();
+      });
+
+      req.end();
+    } catch (error) {
+      this.logWithTimestamp('🚂 Self health check error:', error.message);
     }
   }
 }

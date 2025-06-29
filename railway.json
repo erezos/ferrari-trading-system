@@ -7,17 +7,21 @@
     "startCommand": "node ferrari_start.js",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,
+    "healthcheckInterval": 30,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3,
-    "numReplicas": 1
+    "numReplicas": 1,
+    "sleepApplication": false
   },
   "environments": {
     "production": {
       "variables": {
         "NODE_ENV": "production",
+        "PORT": "3000",
         "RAILWAY_HEALTHCHECK_TIMEOUT_SEC": "300",
-        "RAILWAY_DEPLOYMENT_OVERLAP_SECONDS": "10",
-        "RAILWAY_DEPLOYMENT_REPLICA_LIMIT": "1"
+        "RAILWAY_DEPLOYMENT_OVERLAP_SECONDS": "30",
+        "RAILWAY_DEPLOYMENT_REPLICA_LIMIT": "1",
+        "RAILWAY_DEPLOYMENT_TIMEOUT": "600"
       }
     }
   }
