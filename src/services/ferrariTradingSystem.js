@@ -689,9 +689,15 @@ export class FerrariTradingSystem extends EventEmitter {
         takeProfit1: price - (atr * atrMultiplier.target1),
         takeProfit2: price - (atr * atrMultiplier.target2)
       };
+    } else {
+      // For neutral sentiment, use symmetric levels based on ATR
+      return {
+        entry: price,
+        stopLoss: price - (atr * atrMultiplier.stop), // Stop loss below entry
+        takeProfit1: price + (atr * atrMultiplier.target1), // Take profit above entry
+        takeProfit2: price + (atr * atrMultiplier.target2)  // Higher take profit
+      };
     }
-    
-    return { entry: price, stopLoss: price, takeProfit1: price, takeProfit2: price };
   }
 
   async getMarketContext() {
