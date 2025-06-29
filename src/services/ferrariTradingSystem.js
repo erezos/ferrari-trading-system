@@ -16,6 +16,7 @@
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import LogoUtils from '../utils/logoUtils.js';
+import technicalAnalysisService from './technicalAnalysisService.js';
 
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
@@ -298,6 +299,12 @@ export class FerrariTradingSystem extends EventEmitter {
   updatePrice(priceData) {
     const { symbol, price, volume, timestamp } = priceData;
     
+    // Validate price data
+    if (!symbol || !price || price <= 0) {
+      console.warn(`⚠️ Invalid price data for ${symbol}:`, priceData);
+      return;
+    }
+    
     // Get or create price history
     let symbolData = this.state.priceCache.get(symbol) || {
       currentPrice: 0,
@@ -305,26 +312,51 @@ export class FerrariTradingSystem extends EventEmitter {
       priceHistory: [],
       volumeHistory: [],
       lastAnalysis: 0,
-      signalCooldown: 0
+      signalCooldown: 0,
+      lastUpdate: 0
     };
 
     // Update price data
     symbolData.previousPrice = symbolData.currentPrice;
     symbolData.currentPrice = price;
+    symbolData.lastUpdate = timestamp || Date.now();
     
-    // Add to history (keep last 100 data points)
-    symbolData.priceHistory.push({ price, timestamp });
-    symbolData.volumeHistory.push({ volume, timestamp });
+    // Add to history (keep last 100 data points for memory efficiency)
+    symbolData.priceHistory.push({ price, timestamp: symbolData.lastUpdate });
+    if (volume) {
+      symbolData.volumeHistory.push({ volume, timestamp: symbolData.lastUpdate });
+    }
     
+    // Maintain memory limits
     if (symbolData.priceHistory.length > 100) {
       symbolData.priceHistory.shift();
+    }
+    if (symbolData.volumeHistory.length > 100) {
       symbolData.volumeHistory.shift();
     }
 
     this.state.priceCache.set(symbol, symbolData);
 
+    // Clean up stale entries (older than 24 hours) to prevent memory leaks
+    this.cleanupStaleData();
+
     // Check for trading opportunities
     this.checkTradingOpportunity(symbol, symbolData);
+  }
+
+  cleanupStaleData() {
+    // Run cleanup every 1000 price updates to avoid performance impact
+    if (Math.random() > 0.999) {
+      const now = Date.now();
+      const staleThreshold = 24 * 60 * 60 * 1000; // 24 hours
+      
+      for (const [symbol, data] of this.state.priceCache.entries()) {
+        if (now - data.lastUpdate > staleThreshold) {
+          console.log(`🧹 Cleaning up stale data for ${symbol}`);
+          this.state.priceCache.delete(symbol);
+        }
+      }
+    }
   }
 
   async checkTradingOpportunity(symbol, symbolData) {
@@ -339,14 +371,25 @@ export class FerrariTradingSystem extends EventEmitter {
     symbolData.lastAnalysis = now;
 
     try {
+      console.log(`🔍 Analyzing ${symbol} - Price: ${symbolData.currentPrice}`);
+      
       // Multi-timeframe analysis
       const analysis = await this.performComprehensiveAnalysis(symbol, symbolData);
       
-      if (analysis && this.passesQualityGates(analysis)) {
-        await this.generateSignal(analysis);
+      if (analysis) {
+        console.log(`📊 Analysis for ${symbol}: ${analysis.sentiment} strength: ${analysis.strength}`);
         
-        // Set cooldown
-        symbolData.signalCooldown = now + this.config.qualityGates.cooldownPeriod;
+        if (this.passesQualityGates(analysis)) {
+          console.log(`✅ ${symbol} passes quality gates - generating signal!`);
+          await this.generateSignal(analysis);
+          
+          // Set cooldown
+          symbolData.signalCooldown = now + this.config.qualityGates.cooldownPeriod;
+        } else {
+          console.log(`❌ ${symbol} failed quality gates - strength: ${analysis.strength}, required: ${this.config.qualityGates.minimumStrength}`);
+        }
+      } else {
+        console.log(`⚠️ No analysis returned for ${symbol}`);
       }
       
     } catch (error) {
@@ -355,30 +398,48 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async performComprehensiveAnalysis(symbol, symbolData) {
-    const technicalAnalysisService = require('./technicalAnalysisService');
-    
-    // Multi-timeframe analysis
-    const timeframes = ['1min', '5min', '15min', '1hour'];
-    const analyses = {};
-    
-    for (const tf of timeframes) {
-      try {
-        analyses[tf] = await technicalAnalysisService.getTechnicalAnalysis(symbol, tf);
-      } catch (error) {
-        console.warn(`⚠️ Failed to get ${tf} analysis for ${symbol}`);
+    try {
+      // Multi-timeframe analysis
+      const timeframes = ['1min', '5min', '15min', '1hour'];
+      const analyses = {};
+      
+      for (const tf of timeframes) {
+        try {
+          analyses[tf] = await technicalAnalysisService.getTechnicalAnalysis(symbol, tf);
+        } catch (error) {
+          console.warn(`⚠️ Failed to get ${tf} analysis for ${symbol}:`, error.message);
+        }
       }
-    }
 
-    // Combine timeframe signals
-    const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
-    
-    // Add market context
-    combinedAnalysis.marketContext = await this.getMarketContext();
-    
-    // Calculate final strength score
-    combinedAnalysis.finalStrength = this.calculateFinalStrength(combinedAnalysis);
-    
-    return combinedAnalysis;
+      // Combine timeframe signals
+      const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
+      
+      if (!combinedAnalysis) {
+        console.warn(`⚠️ No valid analysis generated for ${symbol}`);
+        return null;
+      }
+      
+      // Add market context with error handling
+      try {
+        combinedAnalysis.marketContext = await this.getMarketContext();
+      } catch (error) {
+        console.warn(`⚠️ Failed to get market context for ${symbol}:`, error.message);
+        combinedAnalysis.marketContext = {
+          marketTrend: 'unknown',
+          volatility: 'unknown',
+          isMarketHours: this.isMarketHours(),
+          sector: 'general'
+        };
+      }
+      
+      // Calculate final strength score
+      combinedAnalysis.finalStrength = this.calculateFinalStrength(combinedAnalysis);
+      
+      return combinedAnalysis;
+    } catch (error) {
+      console.error(`❌ Comprehensive analysis failed for ${symbol}:`, error);
+      return null;
+    }
   }
 
   combineTimeframeAnalysis(symbol, analyses, symbolData) {
@@ -486,16 +547,36 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async getMarketContext() {
-    // Get market-wide indicators
-    const spyData = this.state.priceCache.get('SPY');
-    const vixData = await this.getVIXLevel();
-    
-    return {
-      marketTrend: this.determineMarketTrend(spyData),
-      volatility: vixData?.level || 'unknown',
-      isMarketHours: this.isMarketHours(),
-      sector: 'general' // Could be enhanced with sector analysis
-    };
+    try {
+      // Get market-wide indicators
+      const spyData = this.state.priceCache.get('SPY');
+      
+      let marketTrend = 'neutral';
+      if (spyData && spyData.priceHistory.length > 5) {
+        const recentPrices = spyData.priceHistory.slice(-5);
+        const firstPrice = recentPrices[0].price;
+        const lastPrice = recentPrices[recentPrices.length - 1].price;
+        const change = ((lastPrice - firstPrice) / firstPrice) * 100;
+        
+        if (change > 0.5) marketTrend = 'bullish';
+        else if (change < -0.5) marketTrend = 'bearish';
+      }
+      
+      return {
+        marketTrend,
+        volatility: 'normal', // Could be enhanced with VIX data
+        isMarketHours: this.isMarketHours(),
+        sector: 'general'
+      };
+    } catch (error) {
+      console.warn('⚠️ Error getting market context:', error.message);
+      return {
+        marketTrend: 'unknown',
+        volatility: 'unknown',
+        isMarketHours: this.isMarketHours(),
+        sector: 'general'
+      };
+    }
   }
 
   calculateFinalStrength(analysis) {
@@ -575,25 +656,48 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async getEligibleUsers(analysis) {
-    // Get all users
-    const usersSnapshot = await this.db.collection('users').get();
-    const eligibleUsers = [];
-    
-    for (const userDoc of usersSnapshot.docs) {
-      const userId = userDoc.id;
-      const userData = userDoc.data();
-      
-      // Check rate limits
-      if (await this.canUserReceiveSignal(userId, analysis)) {
-        eligibleUsers.push({
-          userId,
-          preferences: userData.preferences || {},
-          timezone: userData.timezone || 'UTC'
-        });
-      }
+    // Firebase null safety check
+    if (!this.firebaseReady || !this.db) {
+      console.log('⚠️ Test mode: Returning mock eligible users for', analysis.symbol);
+      return [
+        { 
+          userId: 'test_user_1', 
+          preferences: { symbols: [analysis.symbol] }, 
+          timezone: 'UTC' 
+        },
+        { 
+          userId: 'test_user_2', 
+          preferences: {}, 
+          timezone: 'America/New_York' 
+        }
+      ];
     }
     
-    return eligibleUsers;
+    try {
+      // Get all users
+      const usersSnapshot = await this.db.collection('users').get();
+      const eligibleUsers = [];
+      
+      for (const userDoc of usersSnapshot.docs) {
+        const userId = userDoc.id;
+        const userData = userDoc.data();
+        
+        // Check rate limits
+        if (await this.canUserReceiveSignal(userId, analysis)) {
+          eligibleUsers.push({
+            userId,
+            preferences: userData.preferences || {},
+            timezone: userData.timezone || 'UTC'
+          });
+        }
+      }
+      
+      return eligibleUsers;
+    } catch (error) {
+      console.error('❌ Error getting eligible users:', error);
+      // Return empty array to prevent crashes
+      return [];
+    }
   }
 
   async canUserReceiveSignal(userId, analysis) {
@@ -798,12 +902,13 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async saveTip(tip) {
-    if (!this.firebaseReady) {
-      console.log('📝 Test mode: Would save Ferrari tip:', tip.symbol, tip.sentiment);
+    if (!this.firebaseReady || !this.db) {
+      console.log('📝 Test mode: Would save Ferrari tip:', tip.symbol, tip.sentiment, 'strength:', tip.strength);
       return 'test_id_' + Date.now();
     }
     
     try {
+      // Save to Ferrari-specific collection
       const docRef = await this.db.collection('ferrari_tips').add(tip);
       
       // Also save to regular collection for app compatibility
@@ -812,48 +917,61 @@ export class FerrariTradingSystem extends EventEmitter {
         isFerrariSignal: true
       });
       
+      console.log('✅ Ferrari tip saved to Firebase:', docRef.id);
       return docRef.id;
     } catch (error) {
       console.error('❌ Error saving Ferrari tip:', error);
+      // Return null to indicate failure but don't crash
       return null;
     }
   }
 
   async sendToEligibleUsers(tip, eligibleUsers) {
-    if (!this.firebaseReady) {
+    if (!this.firebaseReady || !this.messaging) {
       console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to', eligibleUsers.length, 'users');
+      console.log('📱 Notification preview:', {
+        title: `🏎️ Ferrari Signal: ${tip.symbol}`,
+        body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`,
+        data: { symbol: tip.symbol, strength: tip.strength }
+      });
       return;
     }
-    
-    const message = {
-      title: `🏎️ Ferrari Signal: ${tip.symbol}`,
-      body: `${tip.sentiment.toUpperCase()} at $${tip.entryPrice.toFixed(2)} | Strength: ${tip.strength.toFixed(1)}/5`,
-      data: {
-        symbol: tip.symbol,
-        sentiment: tip.sentiment,
-        entryPrice: tip.entryPrice.toString(),
-        takeProfit: tip.takeProfit.toString(),
-        stopLoss: tip.stopLoss.toString(),
-        strength: tip.strength.toString(),
-        type: 'ferrari-signal',
-        trackingId: tip.trackingId,
-        timestamp: tip.timestamp
-      }
-    };
 
-    // Send to eligible users
-    const tokens = eligibleUsers.map(user => user.fcmToken).filter(Boolean);
-    
-    if (tokens.length > 0) {
-      try {
-        await this.messaging.sendMulticast({
-          tokens,
-          notification: message,
-          data: message.data
-        });
-      } catch (error) {
-        console.error('❌ Error sending Ferrari notifications:', error);
+    try {
+      // Send push notifications to eligible users
+      const notifications = eligibleUsers.map(user => ({
+        notification: {
+          title: `🏎️ Ferrari Signal: ${tip.symbol}`,
+          body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`
+        },
+        data: {
+          symbol: tip.symbol,
+          sentiment: tip.sentiment,
+          strength: tip.strength.toString(),
+          trackingId: tip.trackingId,
+          type: 'ferrari_signal'
+        },
+        topic: `user_${user.userId}` // Assuming topic-based messaging
+      }));
+
+      // Send notifications in batches
+      const batchSize = 500; // Firebase FCM limit
+      for (let i = 0; i < notifications.length; i += batchSize) {
+        const batch = notifications.slice(i, i + batchSize);
+        
+        await Promise.all(batch.map(async (notification) => {
+          try {
+            await this.messaging.send(notification);
+          } catch (error) {
+            console.warn('⚠️ Failed to send notification:', error.message);
+          }
+        }));
       }
+
+      console.log(`📱 Sent ${notifications.length} Ferrari notifications for ${tip.symbol}`);
+    } catch (error) {
+      console.error('❌ Error sending notifications:', error);
+      // Don't crash on notification failures
     }
   }
 

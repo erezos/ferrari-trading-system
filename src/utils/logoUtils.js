@@ -59,7 +59,7 @@ class LogoUtils {
       'NFLX': { name: 'Netflix', sector: 'Entertainment', business: 'Streaming' },
       'DIS': { name: 'Disney', sector: 'Entertainment', business: 'Media & Parks' },
       'CRM': { name: 'Salesforce', sector: 'Technology', business: 'CRM Software' },
-      'AMD': { name: 'AMD', sector: 'Technology', business: 'Semiconductors' },
+      'AMD': { name: 'Advanced Micro Devices', sector: 'Technology', business: 'Semiconductors' },
       'INTC': { name: 'Intel', sector: 'Technology', business: 'Processors' },
       'ORCL': { name: 'Oracle', sector: 'Technology', business: 'Database Software' },
       'ADBE': { name: 'Adobe', sector: 'Technology', business: 'Creative Software' },
