@@ -406,6 +406,15 @@ class FerrariSystemManager {
     try {
       this.logWithTimestamp('🏎️ Initializing Ferrari Trading System...');
       
+      // Debug: Log what we're passing to Ferrari system
+      this.logWithTimestamp('🔍 Debug - Firebase services object:', JSON.stringify({
+        hasFirebaseServices: !!this.firebaseServices,
+        isReady: this.firebaseServices?.isReady,
+        hasDb: !!this.firebaseServices?.db,
+        hasMessaging: !!this.firebaseServices?.messaging,
+        testMode: this.firebaseServices?.testMode
+      }));
+      
       // Create Ferrari system
       this.ferrariSystem = new FerrariTradingSystem(this.firebaseServices);
       
