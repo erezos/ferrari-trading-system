@@ -1166,7 +1166,4 @@ export class FerrariTradingSystem extends EventEmitter {
     
     this.state.performanceMetrics = metrics;
   }
-}
-
-// Export the class only - no automatic instance creation
-export { FerrariTradingSystem }; 
+} 
