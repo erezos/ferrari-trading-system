@@ -388,11 +388,6 @@ export class FerrariTradingSystem extends EventEmitter {
     try {
       const { symbol, price, timestamp, volume, change, changePercent } = priceData;
       
-      // Log significant price movements (>2% change)
-      if (Math.abs(changePercent) >= 2.0) {
-        console.log(`📈 SIGNIFICANT MOVE: ${symbol} ${changePercent > 0 ? '↑' : '↓'} ${changePercent.toFixed(2)}% → $${price}`);
-      }
-      
       // Update price cache
       if (!this.state.priceCache.has(symbol)) {
         this.state.priceCache.set(symbol, {
@@ -646,7 +641,21 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   calculateATR(priceHistory) {
-    if (priceHistory.length < 14) return 0;
+    if (priceHistory.length < 14) {
+      // Fallback: Use recent price volatility if we don't have enough history
+      if (priceHistory.length >= 3) {
+        const recent = priceHistory.slice(-3);
+        let volatilitySum = 0;
+        for (let i = 1; i < recent.length; i++) {
+          const change = Math.abs(recent[i].price - recent[i-1].price);
+          volatilitySum += change;
+        }
+        const avgVolatility = volatilitySum / (recent.length - 1);
+        console.log(`⚠️ ATR fallback for short history: ${avgVolatility.toFixed(6)}`);
+        return avgVolatility || 0.001; // Minimum fallback
+      }
+      return 0.001; // Minimum fallback to prevent zero ATR
+    }
     
     const recent = priceHistory.slice(-14);
     let atrSum = 0;
@@ -670,9 +679,9 @@ export class FerrariTradingSystem extends EventEmitter {
 
   calculateDynamicLevels(price, atr, sentiment) {
     const atrMultiplier = {
-      stop: 2.0,
-      target1: 3.0,
-      target2: 5.0
+      stop: 2.0,        // 2.0 ATR stop loss
+      target1: 5.0,     // 5.0 ATR take profit (5.0/2.0 = 2.5 RR)
+      target2: 8.0      // 8.0 ATR secondary target
     };
 
     if (sentiment === 'bullish') {
