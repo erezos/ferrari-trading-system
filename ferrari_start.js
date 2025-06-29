@@ -3,6 +3,7 @@ import firebaseConfig from './src/config/firebase.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import http from 'http';
 
 // Load environment variables
 dotenv.config();
@@ -76,6 +77,9 @@ class FerrariSystemManager {
         setTimeout(() => {
           this.triggerSelfHealthCheck();
         }, 2000);
+        
+        // Start Railway health check watchdog
+        this.startRailwayWatchdog();
       }
 
       this.logWithTimestamp('✅ Ferrari Trading System ACTIVE');
@@ -539,38 +543,61 @@ class FerrariSystemManager {
   // Railway-specific: Trigger self health check to help Railway detect service
   triggerSelfHealthCheck() {
     try {
-      const http = require('http');
-      const options = {
-        hostname: 'localhost',
-        port: 3000,
-        path: '/health',
-        method: 'GET',
-        timeout: 5000
-      };
+      // Simple approach - use dynamic import for http module
+      import('http').then(({ default: http }) => {
+        const options = {
+          hostname: 'localhost',
+          port: 3000,
+          path: '/health',
+          method: 'GET',
+          timeout: 5000
+        };
 
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
+        const req = http.request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          res.on('end', () => {
+            this.logWithTimestamp('🚂 Self health check completed:', res.statusCode, data);
+          });
         });
-        res.on('end', () => {
-          this.logWithTimestamp('🚂 Self health check completed:', res.statusCode, data);
+
+        req.on('error', (error) => {
+          this.logWithTimestamp('🚂 Self health check failed:', error.message);
         });
-      });
 
-      req.on('error', (error) => {
-        this.logWithTimestamp('🚂 Self health check failed:', error.message);
-      });
+        req.on('timeout', () => {
+          this.logWithTimestamp('🚂 Self health check timeout');
+          req.destroy();
+        });
 
-      req.on('timeout', () => {
-        this.logWithTimestamp('🚂 Self health check timeout');
-        req.destroy();
+        req.setTimeout(5000);
+        req.end();
+      }).catch(error => {
+        this.logWithTimestamp('🚂 Self health check import error:', error.message);
       });
-
-      req.end();
+      
     } catch (error) {
       this.logWithTimestamp('🚂 Self health check error:', error.message);
     }
+  }
+
+  // Railway health check watchdog - periodically trigger self health checks
+  startRailwayWatchdog() {
+    if (!this.isRailway) return;
+    
+    this.logWithTimestamp('🐕 Starting Railway health check watchdog...');
+    
+    // Trigger self health checks every 30 seconds to help Railway detect the service
+    this.railwayWatchdogInterval = setInterval(() => {
+      if (this.railwayHealthCheckCount === 0) {
+        this.logWithTimestamp('🐕 Watchdog: No health checks received, triggering self check...');
+        this.triggerSelfHealthCheck();
+      } else {
+        this.logWithTimestamp('🐕 Watchdog: Health checks working normally (' + this.railwayHealthCheckCount + ' received)');
+      }
+    }, 30000); // Every 30 seconds
   }
 }
 
