@@ -654,17 +654,31 @@ export class FerrariTradingSystem extends EventEmitter {
   async fetchHistoricalOHLCV(symbol, type, limit = 20) {
     try {
       if (type === 'crypto') {
-        // Binance expects lowercase, USDT, no slash
-        let binanceSymbol = symbol.replace('/', '').replace('USD', 'USDT').toLowerCase();
+        // Binance expects uppercase, USDT, no slash
+        const originalSymbol = symbol;
+        let binanceSymbol = symbol.replace('/', '').replace('USD', 'USDT').toUpperCase();
         const url = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1h&limit=${limit}`;
-        const resp = await axios.get(url);
-        return resp.data.map(candle => ({
-          open: parseFloat(candle[1]),
-          high: parseFloat(candle[2]),
-          low: parseFloat(candle[3]),
-          close: parseFloat(candle[4]),
-          volume: parseFloat(candle[5])
-        }));
+        console.log(`[Binance OHLCV] Requesting:`, { originalSymbol, binanceSymbol, url });
+        try {
+          const resp = await axios.get(url);
+          if (resp.status !== 200) {
+            console.warn(`[Binance OHLCV] Non-200 response`, { status: resp.status, data: resp.data });
+          }
+          return resp.data.map(candle => ({
+            open: parseFloat(candle[1]),
+            high: parseFloat(candle[2]),
+            low: parseFloat(candle[3]),
+            close: parseFloat(candle[4]),
+            volume: parseFloat(candle[5])
+          }));
+        } catch (err) {
+          if (err.response) {
+            console.error(`[Binance OHLCV] Error response for`, { originalSymbol, binanceSymbol, url, status: err.response.status, data: err.response.data });
+          } else {
+            console.error(`[Binance OHLCV] Request error for`, { originalSymbol, binanceSymbol, url, message: err.message });
+          }
+          throw err;
+        }
       } else if (type === 'stock') {
         // Try Alpaca first
         if (process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY) {
