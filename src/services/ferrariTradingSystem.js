@@ -956,24 +956,49 @@ export class FerrariTradingSystem extends EventEmitter {
       return;
     }
     try {
-      const tip = this.createPremiumTip(analysis);
+      // Beautiful notification formatting
+      const title = `🏎️ ${analysis.symbol} ${analysis.sentiment.toUpperCase()} Signal`;
+      const body = [
+        `${analysis.sentiment === 'bullish' ? '🚀' : analysis.sentiment === 'bearish' ? '🔻' : '⚖️'} ${analysis.symbol} ${analysis.sentiment.toUpperCase()} @ $${Number(analysis.levels.entry).toFixed(2)}`,
+        `Strength: ${Number(analysis.strength).toFixed(2)}/5 | RR: ${Number(analysis.riskRewardRatio).toFixed(2)}`,
+        `TP: $${Number(analysis.levels.takeProfit1).toFixed(2)} | SL: $${Number(analysis.levels.stopLoss).toFixed(2)}`
+      ].join('\n');
+
+      // FCM data payload: all string values
+      const data = {
+        symbol: String(analysis.symbol),
+        sentiment: String(analysis.sentiment),
+        strength: String(analysis.strength),
+        trackingId: String(this.generateTrackingId()),
+        type: 'trading_tip',
+        entryPrice: String(analysis.levels.entry),
+        stopLoss: String(analysis.levels.stopLoss),
+        takeProfit: String(analysis.levels.takeProfit1),
+        takeProfit2: String(analysis.levels.takeProfit2),
+        riskRewardRatio: String(analysis.riskRewardRatio),
+        confidence: String(Math.min(95, analysis.strength * 19)),
+        marketContext: JSON.stringify(analysis.marketContext),
+        reasoning: Array.isArray(analysis.reasoning) ? analysis.reasoning.join('\n') : String(analysis.reasoning),
+        company: JSON.stringify(LogoUtils.getCompanyInfo(analysis.symbol)),
+        analysisLevel: analysis.institutionalGrade ? 'institutional_grade' : 'technical_grade',
+        timestamp: String(analysis.timestamp),
+        isPremium: String(true),
+        isFerrariSignal: String(true),
+        isInstitutionalGrade: String(!!analysis.institutionalGrade),
+        expiresAt: String(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString())
+      };
+
       const payload = {
         topic: 'trading_tips',
         notification: {
-          title: `🏎️ Ferrari Signal: ${tip.symbol}`,
-          body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`
+          title,
+          body
         },
-        data: {
-          symbol: tip.symbol,
-          sentiment: tip.sentiment,
-          strength: tip.strength.toString(),
-          trackingId: tip.trackingId,
-          type: 'trading_tip',
-          ...tip // include all tip fields as needed
-        }
+        data
       };
+      console.log('🚀 FCM payload preview:', JSON.stringify(payload, null, 2));
       await this.messaging.send(payload);
-      console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${tip.symbol}`);
+      console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${analysis.symbol}`);
     } catch (error) {
       console.error('❌ Error sending Ferrari signal notification:', error);
     }
