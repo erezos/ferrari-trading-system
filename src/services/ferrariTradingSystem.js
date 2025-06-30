@@ -97,7 +97,8 @@ export class FerrariTradingSystem extends EventEmitter {
       timeouts: new Set(),
       isShuttingDown: false,
       dailySignalCount: 0,
-      lastSignalDate: null
+      lastSignalDate: null,
+      lastSignalTimestamp: null
     };
     
     // Initialize Firebase services
@@ -201,13 +202,16 @@ export class FerrariTradingSystem extends EventEmitter {
               if (msg.T === 'success' && msg.msg === 'authenticated') {
                 console.log('✅ Alpaca authenticated successfully! Subscribing to symbols...');
                 
-                // Subscribe to trades only (most reliable)
+                // Subscribe to trades for ALL symbols (log if too many)
                 const subscribeMsg = {
                   action: 'subscribe',
-                  trades: symbols.slice(0, 10) // Start with first 10 symbols
+                  trades: symbols // All symbols
                 };
-                console.log('📡 Alpaca subscribing to:', subscribeMsg);
+                if (symbols.length > 50) {
+                  console.warn(`⚠️ Subscribing to a large number of Alpaca symbols: ${symbols.length}`);
+                }
                 ws.send(JSON.stringify(subscribeMsg));
+                console.log('📡 Alpaca subscribing to:', subscribeMsg);
                 
               } else if (msg.T === 'error') {
                 console.error('❌ Alpaca error:', msg);
@@ -314,15 +318,15 @@ export class FerrariTradingSystem extends EventEmitter {
     ws.on('open', () => {
       console.log('🟢 Finnhub feed connected - subscribing to symbols...');
       
-      // Subscribe to first 10 symbols to start
-      const symbolsToSubscribe = symbols.slice(0, 10);
-      console.log('📡 Finnhub subscribing to:', symbolsToSubscribe);
-      
-      symbolsToSubscribe.forEach(symbol => {
+      // Subscribe to ALL symbols (log if too many)
+      if (symbols.length > 50) {
+        console.warn(`⚠️ Subscribing to a large number of Finnhub symbols: ${symbols.length}`);
+      }
+      symbols.forEach(symbol => {
         const subscribeMsg = { type: 'subscribe', symbol };
-        console.log(`📡 Subscribing to ${symbol}:`, subscribeMsg);
         ws.send(JSON.stringify(subscribeMsg));
       });
+      console.log('📡 Finnhub subscribing to:', symbols);
     });
 
     ws.on('message', (data) => {
@@ -938,120 +942,65 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async generateSignal(analysis) {
     // Check user rate limits before generating
-    const eligibleUsers = await this.getEligibleUsers(analysis);
-    
-    if (eligibleUsers.length === 0) {
-      console.log(`⚠️ No eligible users for ${analysis.symbol} signal (rate limits)`);
+    if (!this.canSendSignalNow()) {
+      console.log(`❌ Cannot send signal for ${analysis.symbol}: daily/hourly limit reached.`);
       return;
     }
     
-    // Create high-quality trading tip
-    const tip = this.createPremiumTip(analysis);
-    
-    // Save to database
-    const tipId = await this.saveTip(tip);
-    
-    if (tipId) {
-      // Send to eligible users only
-      await this.sendToEligibleUsers(tip, eligibleUsers);
-      
-      // Update user limits
-      await this.updateUserLimits(eligibleUsers, tip);
-      
-      console.log(`✅ Premium signal delivered: ${analysis.symbol} to ${eligibleUsers.length} users`);
-      this.state.performanceMetrics.signalsDelivered++;
+    // Mark signal as sent (update limits)
+    this.markSignalSent();
+
+    // Send notification to FCM topic 'trading_tips'
+    if (!this.firebaseReady || !this.messaging) {
+      console.log('📱 Test mode: Would send notification for:', analysis.symbol);
+      return;
+    }
+    try {
+      const tip = this.createPremiumTip(analysis);
+      const payload = {
+        topic: 'trading_tips',
+        notification: {
+          title: `🏎️ Ferrari Signal: ${tip.symbol}`,
+          body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`
+        },
+        data: {
+          symbol: tip.symbol,
+          sentiment: tip.sentiment,
+          strength: tip.strength.toString(),
+          trackingId: tip.trackingId,
+          type: 'trading_tip',
+          ...tip // include all tip fields as needed
+        }
+      };
+      await this.messaging.send(payload);
+      console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${tip.symbol}`);
+    } catch (error) {
+      console.error('❌ Error sending Ferrari signal notification:', error);
     }
   }
 
-  async getEligibleUsers(analysis) {
-    // Check global daily signal limit first
+  canSendSignalNow() {
+    const now = Date.now();
     const today = new Date().toDateString();
     const todaySignals = this.state.dailySignalCount || 0;
     const maxDailySignals = this.config.rateLimiting.maxDailyTips || 5;
-    
+    const lastSignalTime = this.state.lastSignalTimestamp || 0;
+    const oneHour = 60 * 60 * 1000;
     if (todaySignals >= maxDailySignals) {
       console.log(`⚠️ Daily signal limit reached (${todaySignals}/${maxDailySignals})`);
-      return [];
+      return false;
     }
-    
-    // Firebase null safety check
-    if (!this.firebaseReady || !this.db) {
-      console.log('⚠️ Test mode: Returning mock eligible users for', analysis.symbol);
-      return [
-        { 
-          userId: 'test_user_1', 
-          preferences: { symbols: [analysis.symbol] }, 
-          timezone: 'UTC' 
-        },
-        { 
-          userId: 'test_user_2', 
-          preferences: {}, 
-          timezone: 'America/New_York' 
-        }
-      ];
+    if (now - lastSignalTime < oneHour) {
+      const mins = Math.ceil((oneHour - (now - lastSignalTime)) / 60000);
+      console.log(`⚠️ Hourly signal limit: must wait ${mins} more min(s)`);
+      return false;
     }
-    
-    try {
-      // Get all users - send signal to ALL users (global limit, not per-user)
-      const usersSnapshot = await this.db.collection('users').get();
-      const eligibleUsers = [];
-      
-      for (const userDoc of usersSnapshot.docs) {
-        const userId = userDoc.id;
-        const userData = userDoc.data();
-        
-        // Add all users since we're using global daily limits
-        eligibleUsers.push({
-          userId,
-          preferences: userData.preferences || {},
-          timezone: userData.timezone || 'UTC'
-        });
-      }
-      
-      console.log(`✅ Found ${eligibleUsers.length} eligible users for ${analysis.symbol} signal`);
-      return eligibleUsers;
-    } catch (error) {
-      console.error('❌ Error getting eligible users:', error);
-      // Return empty array to prevent crashes
-      return [];
-    }
+    return true;
   }
 
-  async canUserReceiveSignal(userId, analysis) {
-    const userLimits = this.state.userLimits.get(userId) || {
-      dailyCount: 0,
-      hourlyCount: 0,
-      lastSignal: 0,
-      lastReset: new Date().toDateString()
-    };
-    
-    const now = new Date();
-    const today = now.toDateString();
-    const hourAgo = now.getTime() - 3600000;
-    
-    // Reset daily counter if new day
-    if (userLimits.lastReset !== today) {
-      userLimits.dailyCount = 0;
-      userLimits.hourlyCount = 0;
-      userLimits.lastReset = today;
-    }
-    
-    // Reset hourly counter
-    if (userLimits.lastSignal < hourAgo) {
-      userLimits.hourlyCount = 0;
-    }
-    
-    // Check limits
-    const config = this.config.rateLimiting;
-    
-    // High priority signals can bypass some limits
-    if (analysis.finalStrength >= config.priorityThreshold) {
-      return userLimits.dailyCount < config.maxDailyTips;
-    }
-    
-    // Regular limits
-    return userLimits.dailyCount < config.maxDailyTips && 
-           userLimits.hourlyCount < config.maxHourlyTips;
+  markSignalSent() {
+    this.state.lastSignalTimestamp = Date.now();
+    this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
   }
 
   createPremiumTip(analysis) {
@@ -1352,5 +1301,80 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async resetDailyLimits() {
     // Implementation of resetDailyLimits method
+  }
+
+  // Helper: Check if US market is open (9:30am-4:00pm EST, weekdays)
+  isUSMarketOpen() {
+    const now = new Date();
+    const est = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const hour = est.getHours();
+    const minute = est.getMinutes();
+    const day = est.getDay();
+    if (day === 0 || day === 6) return false; // Sunday/Saturday
+    const marketStart = 9.5; // 9:30am
+    const marketEnd = 16; // 4:00pm
+    const currentTime = hour + (minute / 60);
+    return currentTime >= marketStart && currentTime <= marketEnd;
+  }
+
+  // Helper: Check if we can send a signal (daily/hourly limits)
+  canSendSignalNow() {
+    const now = Date.now();
+    const today = new Date().toDateString();
+    const todaySignals = this.state.dailySignalCount || 0;
+    const maxDailySignals = this.config.rateLimiting.maxDailyTips || 5;
+    const lastSignalTime = this.state.lastSignalTimestamp || 0;
+    const oneHour = 60 * 60 * 1000;
+    if (todaySignals >= maxDailySignals) {
+      console.log(`⚠️ Daily signal limit reached (${todaySignals}/${maxDailySignals})`);
+      return false;
+    }
+    if (now - lastSignalTime < oneHour) {
+      const mins = Math.ceil((oneHour - (now - lastSignalTime)) / 60000);
+      console.log(`⚠️ Hourly signal limit: must wait ${mins} more min(s)`);
+      return false;
+    }
+    return true;
+  }
+
+  // Helper: Mark signal sent (update lastSignalTimestamp)
+  markSignalSent() {
+    this.state.lastSignalTimestamp = Date.now();
+    this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
+  }
+
+  // Main signal selection logic: prefer stocks during US market hours, crypto otherwise
+  async selectAndGenerateSignal() {
+    // Gather all analyses ready for signal
+    const stockCandidates = [];
+    const cryptoCandidates = [];
+    for (const symbol of this.config.watchlist.stocks) {
+      const analysis = await this.analyzeSymbol(symbol);
+      if (analysis && this.passesQualityGates(analysis)) {
+        stockCandidates.push(analysis);
+      }
+    }
+    for (const symbol of this.config.watchlist.crypto) {
+      const analysis = await this.analyzeSymbol(symbol);
+      if (analysis && this.passesQualityGates(analysis)) {
+        cryptoCandidates.push(analysis);
+      }
+    }
+    const marketOpen = this.isUSMarketOpen();
+    let chosen = null;
+    if (marketOpen && stockCandidates.length > 0) {
+      chosen = stockCandidates[0];
+      console.log('📈 Market open: preferring stock signal:', chosen.symbol);
+    } else if (cryptoCandidates.length > 0) {
+      chosen = cryptoCandidates[0];
+      console.log('💹 Market closed or no stocks: preferring crypto signal:', chosen.symbol);
+    } else if (stockCandidates.length > 0) {
+      chosen = stockCandidates[0];
+      console.log('⚠️ No crypto signals, fallback to stock:', chosen.symbol);
+    } else {
+      console.log('❌ No valid signals available.');
+      return;
+    }
+    await this.generateSignal(chosen);
   }
 }
