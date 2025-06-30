@@ -18,6 +18,7 @@ import WebSocket from 'ws';
 import LogoUtils from '../utils/logoUtils.js';
 import technicalAnalysisService from './technicalAnalysisService.js';
 import institutionalAnalysisService from './institutionalAnalysisService.js';
+import axios from 'axios';
 
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
@@ -527,7 +528,7 @@ export class FerrariTradingSystem extends EventEmitter {
       }
 
       // PHASE 3: Combine all analyses
-      const combinedAnalysis = this.combineTimeframeAnalysis(symbol, analyses, symbolData);
+      const combinedAnalysis = await this.combineTimeframeAnalysis(symbol, analyses, symbolData);
       
       if (!combinedAnalysis) {
         console.warn(`⚠️ No valid analysis generated for ${symbol}`);
@@ -584,7 +585,7 @@ export class FerrariTradingSystem extends EventEmitter {
     }
   }
 
-  combineTimeframeAnalysis(symbol, analyses, symbolData) {
+  async combineTimeframeAnalysis(symbol, analyses, symbolData) {
     const validAnalyses = Object.values(analyses).filter(a => a && a.analysis);
     
     if (validAnalyses.length === 0) return null;
@@ -621,8 +622,9 @@ export class FerrariTradingSystem extends EventEmitter {
     const priceChange = symbolData.currentPrice - symbolData.prices[symbolData.prices.length - 2].price;
     const priceChangePercent = (priceChange / symbolData.prices[symbolData.prices.length - 2].price) * 100;
 
-    // Calculate dynamic levels
-    const atr = this.calculateATR(symbolData.prices);
+    // Calculate dynamic levels (await ATR with backfill)
+    const type = symbol.includes('/') ? 'crypto' : 'stock';
+    const atr = await this.calculateATR(symbolData.prices, symbol, type);
     const levels = this.calculateDynamicLevels(currentPrice, atr, consensusSentiment);
 
     console.log(`🔧 DEBUG: ${symbol} | ATR: ${atr.toFixed(6)} | Price: ${currentPrice} | Sentiment: ${consensusSentiment}`);
@@ -642,58 +644,119 @@ export class FerrariTradingSystem extends EventEmitter {
     };
   }
 
-  calculateATR(priceHistory) {
-    if (!priceHistory || priceHistory.length < 2) {
-      return 0.001; // Minimum fallback ATR
+  /**
+   * Fetch historical OHLCV data for a symbol.
+   * @param {string} symbol - Symbol (e.g., BTC/USD, AAPL)
+   * @param {string} type - 'crypto' or 'stock'
+   * @param {number} limit - Number of candles to fetch (default 20)
+   * @returns {Promise<Array>} Array of {open, high, low, close, volume}
+   */
+  async fetchHistoricalOHLCV(symbol, type, limit = 20) {
+    try {
+      if (type === 'crypto') {
+        // Binance expects lowercase, USDT, no slash
+        let binanceSymbol = symbol.replace('/', '').replace('USD', 'USDT').toLowerCase();
+        const url = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1h&limit=${limit}`;
+        const resp = await axios.get(url);
+        return resp.data.map(candle => ({
+          open: parseFloat(candle[1]),
+          high: parseFloat(candle[2]),
+          low: parseFloat(candle[3]),
+          close: parseFloat(candle[4]),
+          volume: parseFloat(candle[5])
+        }));
+      } else if (type === 'stock') {
+        // Try Alpaca first
+        if (process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY) {
+          const alpacaUrl = `https://data.alpaca.markets/v2/stocks/${symbol}/bars?timeframe=1Hour&limit=${limit}`;
+          const resp = await axios.get(alpacaUrl, {
+            headers: {
+              'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
+              'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY
+            }
+          });
+          if (resp.data && resp.data.bars && resp.data.bars.length > 0) {
+            return resp.data.bars.map(bar => ({
+              open: bar.o,
+              high: bar.h,
+              low: bar.l,
+              close: bar.c,
+              volume: bar.v
+            }));
+          }
+        }
+        // Fallback: Finnhub
+        if (process.env.FINNHUB_API_KEY) {
+          const finnhubUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=60&count=${limit}&token=${process.env.FINNHUB_API_KEY}`;
+          const resp = await axios.get(finnhubUrl);
+          if (resp.data && resp.data.c && resp.data.c.length > 0) {
+            // Finnhub returns arrays for o/h/l/c/v
+            return resp.data.c.map((close, i) => ({
+              open: resp.data.o[i],
+              high: resp.data.h[i],
+              low: resp.data.l[i],
+              close: close,
+              volume: resp.data.v[i]
+            }));
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ fetchHistoricalOHLCV failed for ${symbol} (${type}):`, err.message);
     }
-    
+    return [];
+  }
+
+  /**
+   * Robust ATR calculation with backfill for missing OHLCV data.
+   * If priceHistory is missing/invalid, fetches and retries before fallback.
+   */
+  async calculateATR(priceHistory, symbol = '', type = '') {
+    // Defensive: must be array with at least 2 elements
+    if (!Array.isArray(priceHistory) || priceHistory.length < 2 || priceHistory.some(p => typeof p.close !== 'number' || typeof p.high !== 'number' || typeof p.low !== 'number')) {
+      console.warn(`⚠️ ATR: priceHistory missing/invalid for ${symbol}. Attempting backfill...`);
+      // Try to fetch and retry
+      const fetched = await this.fetchHistoricalOHLCV(symbol, type);
+      if (Array.isArray(fetched) && fetched.length >= 2) {
+        priceHistory = fetched;
+      } else {
+        console.warn(`⚠️ ATR: Backfill failed for ${symbol}. Using fallback.`);
+        return 0.001;
+      }
+    }
+
     // Standard ATR calculation for symbols with enough data
     if (priceHistory.length >= 14) {
       const trueRanges = [];
-      
       for (let i = 1; i < Math.min(priceHistory.length, 20); i++) {
         const current = priceHistory[i];
         const previous = priceHistory[i - 1];
-        
         const highLow = Math.abs(current.high - current.low);
         const highClose = Math.abs(current.high - previous.close);
         const lowClose = Math.abs(current.low - previous.close);
-        
         trueRanges.push(Math.max(highLow, highClose, lowClose));
       }
-      
       const atr = trueRanges.reduce((sum, tr) => sum + tr, 0) / trueRanges.length;
-      
-      // Ensure minimum ATR relative to price
       const currentPrice = priceHistory[0].close;
-      const minimumATR = currentPrice * 0.001; // 0.1% of price minimum
-      
+      const minimumATR = currentPrice * 0.001;
       return Math.max(atr, minimumATR);
     }
-    
+
     // Fallback ATR for symbols with limited data
     const recentPrices = priceHistory.slice(0, Math.min(priceHistory.length, 10));
     const prices = recentPrices.map(p => p.close);
-    
     if (prices.length < 2) {
-      return prices[0] * 0.001; // 0.1% of price as fallback
+      return prices[0] * 0.001;
     }
-    
-    // Calculate recent volatility
     let totalVariation = 0;
     for (let i = 1; i < prices.length; i++) {
       totalVariation += Math.abs(prices[i] - prices[i - 1]);
     }
-    
     const avgVariation = totalVariation / (prices.length - 1);
     const currentPrice = prices[0];
-    
-    // Ensure minimum ATR (0.1% of current price)
     const minimumATR = currentPrice * 0.001;
     const calculatedATR = Math.max(avgVariation, minimumATR);
-    
-    console.log(`🔧 DEBUG ATR: ${priceHistory[0]?.symbol || 'Unknown'} | Calculated: ${calculatedATR.toFixed(6)} | Price: ${currentPrice} | Points: ${prices.length}`);
-    
+    console.log(`🔧 DEBUG ATR: ${symbol} | Calculated: ${calculatedATR.toFixed(6)} | Price: ${currentPrice} | Points: ${prices.length}`);
     return calculatedATR;
   }
 
@@ -1189,206 +1252,4 @@ export class FerrariTradingSystem extends EventEmitter {
     if (!this.firebaseReady || !this.messaging) {
       console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to', eligibleUsers.length, 'users');
       console.log('📱 Notification preview:', {
-        title: `🏎️ Ferrari Signal: ${tip.symbol}`,
-        body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`,
-        data: { symbol: tip.symbol, strength: tip.strength }
-      });
-      return;
-    }
-
-    try {
-      // Send push notifications to eligible users
-      const notifications = eligibleUsers.map(user => ({
-        notification: {
-          title: `🏎️ Ferrari Signal: ${tip.symbol}`,
-          body: `${tip.sentiment.toUpperCase()} signal detected - Strength: ${tip.strength}/5.0`
-        },
-        data: {
-          symbol: tip.symbol,
-          sentiment: tip.sentiment,
-          strength: tip.strength.toString(),
-          trackingId: tip.trackingId,
-          type: 'ferrari_signal'
-        },
-        topic: `user_${user.userId}` // Assuming topic-based messaging
-      }));
-
-      // Send notifications in batches
-      const batchSize = 500; // Firebase FCM limit
-      for (let i = 0; i < notifications.length; i += batchSize) {
-        const batch = notifications.slice(i, i + batchSize);
-        
-        await Promise.all(batch.map(async (notification) => {
-          try {
-            await this.messaging.send(notification);
-          } catch (error) {
-            console.warn('⚠️ Failed to send notification:', error.message);
-          }
-        }));
-      }
-
-      console.log(`📱 Sent ${notifications.length} Ferrari notifications for ${tip.symbol}`);
-    } catch (error) {
-      console.error('❌ Error sending notifications:', error);
-      // Don't crash on notification failures
-    }
-  }
-
-  async updateUserLimits(eligibleUsers, tip) {
-    // Track global daily signal count
-    const today = new Date().toDateString();
-    
-    // Reset daily count if new day
-    if (this.state.lastSignalDate !== today) {
-      this.state.dailySignalCount = 0;
-      this.state.lastSignalDate = today;
-    }
-    
-    // Increment global signal count
-    this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
-    
-    console.log(`📊 Global signal count: ${this.state.dailySignalCount}/${this.config.rateLimiting.maxDailyTips} for ${today}`);
-    
-    // Update per-user tracking for analytics (optional)
-    for (const user of eligibleUsers) {
-      const userLimits = this.state.userLimits.get(user.userId) || {
-        dailyCount: 0,
-        hourlyCount: 0,
-        lastSignal: 0,
-        lastReset: today
-      };
-      
-      // Reset if new day
-      if (userLimits.lastReset !== today) {
-        userLimits.dailyCount = 0;
-        userLimits.hourlyCount = 0;
-        userLimits.lastReset = today;
-      }
-      
-      // Update counts for analytics
-      userLimits.dailyCount++;
-      userLimits.hourlyCount++;
-      userLimits.lastSignal = Date.now();
-      
-      this.state.userLimits.set(user.userId, userLimits);
-    }
-  }
-
-  getSystemStats() {
-    return {
-      connectedFeeds: Object.fromEntries(this.state.connectedFeeds),
-      symbolsMonitored: this.getTotalSymbols(),
-      performanceMetrics: this.state.performanceMetrics,
-      rateLimiting: this.config.rateLimiting,
-      uptime: process.uptime()
-    };
-  }
-
-  async shutdown() {
-    try {
-      console.log('🛑 Shutting down Ferrari Trading System...');
-      this.state.isShuttingDown = true;
-      
-      // Stop accepting new signals
-      console.log('📵 Stopping signal processing...');
-      
-      // Close all WebSocket connections gracefully
-      console.log('🔌 Closing WebSocket connections...');
-      for (const ws of this.state.websockets) {
-        try {
-          if (ws.readyState === 1) { // OPEN
-            ws.close(1000, 'Server shutdown'); // Normal closure
-          }
-        } catch (error) {
-          console.warn('⚠️ Error closing WebSocket:', error.message);
-        }
-      }
-      
-      // Wait for WebSockets to close (max 5 seconds)
-      await Promise.race([
-        new Promise(resolve => {
-          const checkClosed = () => {
-            const openSockets = Array.from(this.state.websockets).filter(ws => ws.readyState === 1);
-            if (openSockets.length === 0) {
-              resolve();
-            } else {
-              setTimeout(checkClosed, 100);
-            }
-          };
-          checkClosed();
-        }),
-        new Promise(resolve => setTimeout(resolve, 5000)) // 5 second timeout
-      ]);
-      
-      // Clear all intervals
-      console.log('⏰ Clearing intervals...');
-      for (const interval of this.state.intervals) {
-        clearInterval(interval);
-      }
-      this.state.intervals.clear();
-      
-      // Clear all timeouts
-      console.log('⏱️ Clearing timeouts...');
-      for (const timeout of this.state.timeouts) {
-        clearTimeout(timeout);
-      }
-      this.state.timeouts.clear();
-      
-      // Final cleanup
-      this.state.priceCache.clear();
-      this.state.signalHistory.clear();
-      this.state.connectedFeeds.clear();
-      
-      console.log('✅ Ferrari system shutdown complete');
-      
-    } catch (error) {
-      console.error('❌ Error during Ferrari shutdown:', error);
-      throw error;
-    }
-  }
-
-  processSignalQueue() {
-    // Process any queued signals
-    // This method is called every 10 seconds by startSignalEngine
-    if (this.state.signalQueue && this.state.signalQueue.length > 0) {
-      console.log(`🔄 Processing ${this.state.signalQueue.length} queued signals`);
-      // Process signals here
-    }
-  }
-
-  resetHourlyLimits() {
-    console.log('🔄 Resetting hourly rate limits');
-    this.state.userLimits.forEach(limits => {
-      limits.hourlyCount = 0;
-    });
-  }
-
-  resetDailyLimits() {
-    console.log('🔄 Resetting daily limits (new day started)');
-    
-    // Reset global daily signal count
-    this.state.dailySignalCount = 0;
-    this.state.lastSignalDate = new Date().toDateString();
-    
-    // Reset all user daily limits
-    for (const [userId, limits] of this.state.userLimits) {
-      limits.dailyCount = 0;
-      limits.lastReset = new Date().toDateString();
-    }
-    
-    console.log('✅ Daily limits reset for all users and global signal count');
-  }
-
-  updatePerformanceMetrics() {
-    // Update system performance metrics
-    const metrics = {
-      timestamp: new Date().toISOString(),
-      symbolsActive: this.state.priceCache.size,
-      feedsConnected: Array.from(this.state.connectedFeeds.values()).filter(f => f.status === 'connected').length,
-      signalsGenerated: this.state.performanceMetrics.signalsGenerated || 0,
-      uptime: process.uptime()
-    };
-    
-    this.state.performanceMetrics = metrics;
-  }
-} 
+        title: `
