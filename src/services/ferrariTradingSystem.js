@@ -1251,5 +1251,92 @@ export class FerrariTradingSystem extends EventEmitter {
   async sendToEligibleUsers(tip, eligibleUsers) {
     if (!this.firebaseReady || !this.messaging) {
       console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to', eligibleUsers.length, 'users');
-      console.log('📱 Notification preview:', {
-        title: `
+      console.log('📱 Notification preview:', {});
+      return;
+    }
+    
+    try {
+      // Send notification to eligible users
+      const notification = {
+        title: `New Ferrari Signal: ${tip.symbol}`,
+        body: `A new signal is available for ${tip.symbol}. Sentiment: ${tip.sentiment.toUpperCase()}, Strength: ${tip.strength.toFixed(2)}/5.0`,
+        icon: tip.company.logoUrl,
+        click_action: 'https://www.ferrari.com'
+      };
+      
+      const payload = {
+        to: eligibleUsers.map(u => u.userId),
+        notification,
+        data: {
+          symbol: tip.symbol,
+          sentiment: tip.sentiment,
+          strength: tip.strength.toFixed(2),
+          confidence: tip.confidence.toFixed(2),
+          entryPrice: tip.levels.entry.toFixed(2),
+          stopLoss: tip.levels.stopLoss.toFixed(2),
+          takeProfit: tip.levels.takeProfit1.toFixed(2),
+          takeProfit2: tip.levels.takeProfit2.toFixed(2),
+          riskRewardRatio: tip.riskRewardRatio.toFixed(2),
+          marketContext: JSON.stringify(tip.marketContext),
+          reasoning: tip.reasoning.join('\n'),
+          companyName: tip.company.name,
+          companyLogoUrl: tip.company.logoUrl,
+          companySector: tip.company.sector,
+          companyBusiness: tip.company.business,
+          companyIsCrypto: tip.company.isCrypto,
+          analysisLevel: tip.analysisLevel,
+          timestamp: tip.timestamp,
+          isPremium: tip.isPremium,
+          isFerrariSignal: tip.isFerrariSignal,
+          isInstitutionalGrade: tip.isInstitutionalGrade,
+          trackingId: tip.trackingId,
+          expiresAt: tip.expiresAt.toISOString()
+        }
+      };
+      
+      await this.messaging.sendMulticast(payload);
+      
+      console.log(`✅ Ferrari signal notification sent to ${eligibleUsers.length} users`);
+    } catch (error) {
+      console.error('❌ Error sending Ferrari signal notification:', error);
+    }
+  }
+
+  async updateUserLimits(eligibleUsers, tip) {
+    for (const user of eligibleUsers) {
+      const userId = user.userId;
+      const canReceiveSignal = await this.canUserReceiveSignal(userId, tip);
+      
+      if (canReceiveSignal) {
+        const userLimits = this.state.userLimits.get(userId) || {
+          dailyCount: 0,
+          hourlyCount: 0,
+          lastSignal: 0,
+          lastReset: new Date().toDateString()
+        };
+        
+        userLimits.dailyCount++;
+        userLimits.hourlyCount++;
+        userLimits.lastSignal = Date.now();
+        
+        this.state.userLimits.set(userId, userLimits);
+      }
+    }
+  }
+
+  async updatePerformanceMetrics() {
+    // Implementation of updatePerformanceMetrics method
+  }
+
+  async processSignalQueue() {
+    // Implementation of processSignalQueue method
+  }
+
+  async resetHourlyLimits() {
+    // Implementation of resetHourlyLimits method
+  }
+
+  async resetDailyLimits() {
+    // Implementation of resetDailyLimits method
+  }
+}
