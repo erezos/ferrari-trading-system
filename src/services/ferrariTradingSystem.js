@@ -1030,12 +1030,12 @@ export class FerrariTradingSystem extends EventEmitter {
     this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
   }
 
-  createPremiumTip(analysis) {
+  async createPremiumTip(analysis) {
     // Get complete company information with logo and business data
     const companyInfo = LogoUtils.getCompanyInfo(analysis.symbol);
     
-    // Determine timeframe based on strength and market conditions
-    const timeframe = this.determineTimeframe(analysis);
+    // Determine timeframe based on oldest timeframe logic (now async)
+    const timeframe = await this.determineTimeframe(analysis);
     
     // Enhanced reasoning with institutional insights
     let enhancedReasoning = [...analysis.reasoning];
@@ -1134,24 +1134,93 @@ export class FerrariTradingSystem extends EventEmitter {
     };
   }
 
-  determineTimeframe(analysis) {
-    // BACKWARD COMPATIBILITY FIX #2: Map to Flutter app's expected timeframe values
-    // Flutter app expects: 'short_term', 'mid_term', 'long_term' (with underscores)
+  async determineTimeframe(analysis) {
+    // DYNAMIC TIMEFRAME SELECTION: Update oldest timeframe first for app freshness
+    try {
+      if (!this.firebaseReady || !this.db) {
+        // Fallback to quality-based selection in test mode
+        return this.determineTimeframeByQuality(analysis);
+      }
+
+      // Check last update time for each timeframe in Firebase
+      const timeframes = ['short_term', 'mid_term', 'long_term'];
+      const timeframeAges = [];
+
+      for (const timeframe of timeframes) {
+        try {
+          // Check latest_tips collection (current active tips)
+          const doc = await this.db.collection('latest_tips').doc(timeframe).get();
+          
+          if (doc.exists) {
+            const data = doc.data();
+            const lastUpdated = data.createdAt ? data.createdAt.toDate() : new Date(0);
+            const ageInHours = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60);
+            
+            timeframeAges.push({
+              timeframe,
+              lastUpdated,
+              ageInHours,
+              exists: true
+            });
+          } else {
+            // No tip exists for this timeframe - highest priority
+            timeframeAges.push({
+              timeframe,
+              lastUpdated: new Date(0),
+              ageInHours: Infinity,
+              exists: false
+            });
+          }
+        } catch (error) {
+          console.warn(`⚠️ Error checking ${timeframe} age:`, error.message);
+          // Assume very old if can't check
+          timeframeAges.push({
+            timeframe,
+            lastUpdated: new Date(0),
+            ageInHours: 999,
+            exists: false
+          });
+        }
+      }
+
+      // Sort by age (oldest first)
+      timeframeAges.sort((a, b) => b.ageInHours - a.ageInHours);
+      
+      const oldestTimeframe = timeframeAges[0];
+      
+      console.log('📅 Timeframe ages:', timeframeAges.map(tf => 
+        `${tf.timeframe}: ${tf.exists ? tf.ageInHours.toFixed(1) + 'h ago' : 'never'}`
+      ).join(', '));
+      
+      console.log(`🎯 Selected oldest timeframe: ${oldestTimeframe.timeframe} (${oldestTimeframe.ageInHours === Infinity ? 'never updated' : oldestTimeframe.ageInHours.toFixed(1) + 'h ago'})`);
+      
+      return oldestTimeframe.timeframe;
+      
+    } catch (error) {
+      console.error('❌ Error in dynamic timeframe selection:', error);
+      // Fallback to quality-based selection
+      return this.determineTimeframeByQuality(analysis);
+    }
+  }
+
+  determineTimeframeByQuality(analysis) {
+    // FALLBACK: Original quality-based timeframe mapping
+    // Used when Firebase is unavailable or on error
     const strength = analysis.finalStrength;
     const riskReward = analysis.riskRewardRatio;
     
     // High strength, high risk/reward = short term (quick moves)
     if (strength >= 4.5 && riskReward >= 3.0) {
-      return 'short_term'; // Flutter deep-link compatibility
+      return 'short_term';
     }
     
     // Good strength, balanced risk/reward = mid term
     if (strength >= 4.0 && riskReward >= 2.5) {
-      return 'mid_term'; // Flutter deep-link compatibility
+      return 'mid_term';
     }
     
     // Lower strength but still quality = long term (more time to develop)
-    return 'long_term'; // Flutter deep-link compatibility
+    return 'long_term';
   }
 
   buildReasoning(symbol, sentiment, strength, priceChange) {
