@@ -174,17 +174,17 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectAlpacaFeed(symbols) {
-    if (!this.alpacaSocket && this.config.dataFeeds.alpaca.enabled) {
+    if (!this.alpacaSocket && process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY) {
       console.log('🔌 Connecting to Alpaca feed...');
-      this.alpacaSocket = new WebSocket(this.config.dataFeeds.alpaca.websocketUrl);
+      this.alpacaSocket = new WebSocket("wss://stream.data.alpaca.markets/v2/iex");
 
       this.alpacaSocket.onopen = () => {
         console.log('🟢 Alpaca feed connected');
         // Authenticate
         this.alpacaSocket.send(JSON.stringify({
           action: 'auth',
-          key: this.config.dataFeeds.alpaca.keyId,
-          secret: this.config.dataFeeds.alpaca.secretKey
+          key: process.env.ALPACA_API_KEY,
+          secret: process.env.ALPACA_SECRET_KEY
         }));
       };
 
@@ -222,14 +222,14 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectBinanceFeed(cryptoSymbols) {
-    if (!this.binanceSocket && this.config.dataFeeds.binance.enabled) {
+    if (!this.binanceSocket && true) {
       // Convert symbols to Binance format (BTC/USD -> BTCUSDT)
       const binanceSymbols = cryptoSymbols.map(symbol => 
         symbol.replace('/', '').replace('USD', 'USDT').toLowerCase()
       );
       
       const streamParams = binanceSymbols.map(symbol => `${symbol}@trade`).join('/');
-      const wsUrl = `${this.config.dataFeeds.binance.websocketUrl}/ws/${streamParams}`;
+      const wsUrl = `${"wss://stream.binance.com:9443"}/ws/${streamParams}`;
       
       console.log('🔌 Connecting to Binance feed...');
       this.binanceSocket = new WebSocket(wsUrl);
@@ -270,9 +270,9 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectFinnhubFeed(symbols) {
-    if (!this.finnhubSocket && this.config.dataFeeds.finnhub.enabled) {
+    if (!this.finnhubSocket && process.env.FINNHUB_API_KEY) {
       console.log('🔌 Connecting to Finnhub feed...');
-      const wsUrl = `${this.config.dataFeeds.finnhub.websocketUrl}?token=${this.config.dataFeeds.finnhub.apiKey}`;
+      const wsUrl = `${"wss://ws.finnhub.io"}?token=${process.env.FINNHUB_API_KEY}`;
       this.finnhubSocket = new WebSocket(wsUrl);
 
       this.finnhubSocket.onopen = () => {
