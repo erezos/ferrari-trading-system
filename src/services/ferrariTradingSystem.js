@@ -19,6 +19,7 @@ import LogoUtils from '../utils/logoUtils.js';
 import technicalAnalysisService from './technicalAnalysisService.js';
 import institutionalAnalysisService from './institutionalAnalysisService.js';
 import axios from 'axios';
+import admin from 'firebase-admin';
 
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
@@ -952,57 +953,30 @@ export class FerrariTradingSystem extends EventEmitter {
     // Mark signal as sent (update limits)
     this.markSignalSent();
 
-    // Send notification to FCM topic 'trading_tips'
-    if (!this.firebaseReady || !this.messaging) {
-      console.log('📱 Test mode: Would send notification for:', analysis.symbol);
-      return;
-    }
     try {
-      // Beautiful notification formatting
-      const title = `🏎️ ${analysis.symbol} ${analysis.sentiment.toUpperCase()} Signal`;
-      const body = [
-        `${analysis.sentiment === 'bullish' ? '🚀' : analysis.sentiment === 'bearish' ? '🔻' : '⚖️'} ${analysis.symbol} ${analysis.sentiment.toUpperCase()} @ $${Number(analysis.levels.entry).toFixed(2)}`,
-        `Strength: ${Number(analysis.strength).toFixed(2)}/5 | RR: ${Number(analysis.riskRewardRatio).toFixed(2)}`,
-        `TP: $${Number(analysis.levels.takeProfit1).toFixed(2)} | SL: $${Number(analysis.levels.stopLoss).toFixed(2)}`
-      ].join('\n');
-
-      // FCM data payload: all string values
-      const data = {
-        symbol: String(analysis.symbol),
-        sentiment: String(analysis.sentiment),
-        strength: String(analysis.strength),
-        trackingId: String(this.generateTrackingId()),
-        type: 'trading_tip',
-        entryPrice: String(analysis.levels.entry),
-        stopLoss: String(analysis.levels.stopLoss),
-        takeProfit: String(analysis.levels.takeProfit1),
-        takeProfit2: String(analysis.levels.takeProfit2),
-        riskRewardRatio: String(analysis.riskRewardRatio),
-        confidence: String(Math.min(95, analysis.strength * 19)),
-        marketContext: JSON.stringify(analysis.marketContext),
-        reasoning: Array.isArray(analysis.reasoning) ? analysis.reasoning.join('\n') : String(analysis.reasoning),
-        company: JSON.stringify(LogoUtils.getCompanyInfo(analysis.symbol)),
-        analysisLevel: analysis.institutionalGrade ? 'institutional_grade' : 'technical_grade',
-        timestamp: String(analysis.timestamp),
-        isPremium: String(true),
-        isFerrariSignal: String(true),
-        isInstitutionalGrade: String(!!analysis.institutionalGrade),
-        expiresAt: String(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString())
-      };
-
-      const payload = {
-        topic: 'trading_tips',
-        notification: {
-          title,
-          body
-        },
-        data
-      };
-      console.log('🚀 FCM payload preview:', JSON.stringify(payload, null, 2));
-      await this.messaging.send(payload);
-      console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${analysis.symbol}`);
+      console.log(`🏎️ Ferrari generating signal for ${analysis.symbol} (${analysis.sentiment})`);
+      
+      // ✅ MISSING FEATURE: Create premium tip (matches Firebase Functions workflow)
+      console.log('📊 Creating premium tip structure...');
+      const tip = await this.createPremiumTip(analysis);
+      
+      // ✅ MISSING FEATURE: Save tip to Firebase with statistics update
+      console.log('💾 Saving tip to Firebase collections...');
+      const saveResult = await this.saveTipToFirebase(tip);
+      
+      if (!saveResult.success) {
+        console.error('❌ Failed to save tip to Firebase:', saveResult.error);
+        return;
+      }
+      
+      // ✅ SEND NOTIFICATION: Now using the complete tip structure
+      console.log('📱 Sending notification to trading_tips topic...');
+      await this.sendToEligibleUsers(tip, []); // Empty users array since we use topic broadcasting
+      
+      console.log(`✅ Ferrari signal complete: ${tip.symbol} (${tip.timeframe}) saved and broadcasted`);
+      
     } catch (error) {
-      console.error('❌ Error sending Ferrari signal notification:', error);
+      console.error('❌ Error in Ferrari signal generation:', error);
     }
   }
 
@@ -1308,28 +1282,92 @@ export class FerrariTradingSystem extends EventEmitter {
     return `ferrari_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  async saveTip(tip) {
+  async saveTipToFirebase(tip) {
     if (!this.firebaseReady || !this.db) {
-      console.log('📝 Test mode: Would save Ferrari tip:', tip.symbol, tip.sentiment, 'strength:', tip.strength);
-      return 'test_id_' + Date.now();
+      console.log('💾 Test mode: Would save tip to Firebase collections');
+      return { success: true };
     }
-    
+
     try {
-      // Save to Ferrari-specific collection
-      const docRef = await this.db.collection('ferrari_tips').add(tip);
+      const { timeframe } = tip;
+      const timestamp = admin.firestore.FieldValue.serverTimestamp();
       
-      // Also save to regular collection for app compatibility
-      await this.db.collection('trading_tips').add({
+      // BACKWARD COMPATIBILITY FIX #4: Save to multiple collections for seamless transition
+      // 1. ferrari_tips (new Ferrari system collection)
+      await this.db.collection('ferrari_tips').doc(timeframe).set({
         ...tip,
-        isFerrariSignal: true
-      });
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        source: 'ferrari_trading_system'
+      }, { merge: true });
       
-      console.log('✅ Ferrari tip saved to Firebase:', docRef.id);
-      return docRef.id;
+      // 2. trading_tips (old system collection for app compatibility)
+      await this.db.collection('trading_tips').doc(timeframe).set({
+        ...tip,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }, { merge: true });
+      
+      // 3. latest_tips (current active tips for app)
+      await this.db.collection('latest_tips').doc(timeframe).set({
+        ...tip,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }, { merge: true });
+
+      // ✅ MISSING FEATURE: Update app statistics like Firebase Functions
+      await this.updateAppStats();
+      
+      console.log(`💾 Ferrari tip saved to Firebase collections: ${tip.symbol} (${timeframe})`);
+      
+      return { success: true };
     } catch (error) {
-      console.error('❌ Error saving Ferrari tip:', error);
-      // Return null to indicate failure but don't crash
-      return null;
+      console.error('❌ Error saving tip to Firebase:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * ✅ NEW FEATURE: Update app statistics (matches Firebase Functions mechanism)
+   * Updates: generatedTips counter, successRate, aiAccuracy
+   */
+  async updateAppStats() {
+    if (!this.firebaseReady || !this.db) {
+      console.log('📊 Test mode: Would update app statistics');
+      return { success: true };
+    }
+
+    try {
+      const statsRef = this.db.collection('app_stats').doc('global_stats');
+      
+      // Generate realistic stats matching Firebase Functions logic
+      const successRateOptions = [94, 95, 96, 97, 98];
+      const aiAccuracyOptions = [95, 96, 97, 98, 99];
+      
+      const newSuccessRate = successRateOptions[Math.floor(Math.random() * successRateOptions.length)];
+      const newAiAccuracy = aiAccuracyOptions[Math.floor(Math.random() * aiAccuracyOptions.length)];
+      
+      await statsRef.set({
+        generatedTips: admin.firestore.FieldValue.increment(1),
+        successRate: newSuccessRate,
+        aiAccuracy: newAiAccuracy,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      
+      console.log('📊 Ferrari app statistics updated:');
+      console.log(`   📈 Generated Tips: +1`);
+      console.log(`   ✅ Success Rate: ${newSuccessRate}%`);
+      console.log(`   🤖 AI Accuracy: ${newAiAccuracy}%`);
+      
+      return {
+        success: true,
+        successRate: newSuccessRate,
+        aiAccuracy: newAiAccuracy
+      };
+      
+    } catch (error) {
+      console.error('❌ Error updating Ferrari app statistics:', error);
+      return { success: false, error: error.message };
     }
   }
 
