@@ -1174,6 +1174,24 @@ export class FerrariTradingSystem extends EventEmitter {
     return 'long_term';
   }
 
+  getMostFrequent(array) {
+    if (!array || array.length === 0) return null;
+    
+    const frequency = {};
+    let maxCount = 0;
+    let mostFrequent = array[0];
+    
+    for (const item of array) {
+      frequency[item] = (frequency[item] || 0) + 1;
+      if (frequency[item] > maxCount) {
+        maxCount = frequency[item];
+        mostFrequent = item;
+      }
+    }
+    
+    return mostFrequent;
+  }
+
   buildReasoning(symbol, sentiment, strength, priceChange) {
     const reasons = [];
     
