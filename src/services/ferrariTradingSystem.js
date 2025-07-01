@@ -565,14 +565,23 @@ export class FerrariTradingSystem extends EventEmitter {
     const validAnalyses = Object.values(analyses).filter(a => a !== null);
     
     if (validAnalyses.length === 0) {
+      console.warn(`⚠️ No valid analyses found for ${symbol}`);
       return null;
     }
     
+    // Debug logging to understand what we're working with
+    console.log(`📊 ${symbol} analysis summary:`, {
+      totalAnalyses: validAnalyses.length,
+      sentiments: validAnalyses.map(a => a.sentiment || 'undefined'),
+      strengths: validAnalyses.map(a => a.strength || 'undefined'),
+      timeframes: validAnalyses.map(a => a.timeframe || 'unknown')
+    });
+    
     // Enhanced consensus building with institutional insights
-    const sentiments = validAnalyses.map(a => a.sentiment);
-    const strengths = validAnalyses.map(a => a.strength);
-    const consensusSentiment = this.getMostFrequent(sentiments);
-    const avgStrength = strengths.reduce((sum, s) => sum + s, 0) / strengths.length;
+    const sentiments = validAnalyses.map(a => a.sentiment).filter(s => s); // Filter out undefined sentiments
+    const strengths = validAnalyses.map(a => a.strength).filter(s => typeof s === 'number'); // Filter out undefined strengths
+    const consensusSentiment = this.getMostFrequent(sentiments) || 'neutral'; // Default to neutral if no sentiment
+    const avgStrength = strengths.length > 0 ? strengths.reduce((sum, s) => sum + s, 0) / strengths.length : 3.0; // Default to 3.0
     
     // Current price from latest data
     const currentPrice = symbolData.prices[symbolData.prices.length - 1]?.price || 0;
@@ -1195,8 +1204,11 @@ export class FerrariTradingSystem extends EventEmitter {
   buildReasoning(symbol, sentiment, strength, priceChange) {
     const reasons = [];
     
-    reasons.push(`🏎️ FERRARI SIGNAL: ${sentiment.toUpperCase()} momentum detected`);
-    reasons.push(`Strength: ${strength.toFixed(1)}/5.0 (Premium Quality)`);
+    // Defensive coding: handle undefined sentiment
+    const safeSentiment = sentiment || 'neutral';
+    
+    reasons.push(`🏎️ FERRARI SIGNAL: ${safeSentiment.toUpperCase()} momentum detected`);
+    reasons.push(`Strength: ${(strength || 0).toFixed(1)}/5.0 (Premium Quality)`);
     
     if (Math.abs(priceChange) > 1) {
       reasons.push(`Price momentum: ${priceChange > 0 ? '+' : ''}${priceChange.toFixed(2)}%`);
@@ -1360,15 +1372,16 @@ export class FerrariTradingSystem extends EventEmitter {
     
     try {
       // BACKWARD COMPATIBILITY FIX #3: Use FCM topic broadcasting like old system
-      const sentimentEmoji = tip.sentiment === 'bullish' ? '🚀' : '📉';
+      const safeSentiment = tip.sentiment || 'neutral';
+      const sentimentEmoji = safeSentiment === 'bullish' ? '🚀' : safeSentiment === 'bearish' ? '📉' : '⚪';
       
       // Generate unique message ID for analytics tracking (matches Firebase Functions)
       const messageId = `ferrari_${tip.symbol}_${tip.timeframe}_${Date.now()}`;
       
       const message = {
         notification: {
-          title: `🏎️ ${tip.symbol} ${tip.sentiment.toUpperCase()} Signal`,
-          body: `${sentimentEmoji} ${tip.symbol} ${tip.sentiment.toUpperCase()} @ $${tip.entryPrice?.toFixed(2) || 'TBD'}\nStrength: ${tip.strength.toFixed(1)}/5 | RR: ${tip.riskRewardRatio?.toFixed(2) || 'N/A'}\nTP: $${tip.takeProfit?.toFixed(2) || 'TBD'} | SL: $${tip.stopLoss?.toFixed(2) || 'TBD'}`
+          title: `🏎️ ${tip.symbol} ${safeSentiment.toUpperCase()} Signal`,
+          body: `${sentimentEmoji} ${tip.symbol} ${safeSentiment.toUpperCase()} @ $${tip.entryPrice?.toFixed(2) || 'TBD'}\nStrength: ${(tip.strength || 0).toFixed(1)}/5 | RR: ${tip.riskRewardRatio?.toFixed(2) || 'N/A'}\nTP: $${tip.takeProfit?.toFixed(2) || 'TBD'} | SL: $${tip.stopLoss?.toFixed(2) || 'TBD'}`
         },
         // CRITICAL: All data values must be strings for FCM compatibility
         data: {
@@ -1376,7 +1389,7 @@ export class FerrariTradingSystem extends EventEmitter {
           symbol: tip.symbol,
           timeframe: tip.timeframe, // BACKWARD COMPATIBILITY: For deep-linking
           target_timeframe: tip.timeframe, // CRITICAL: Flutter navigation
-          sentiment: tip.sentiment,
+          sentiment: safeSentiment,
           strength: tip.strength.toString(),
           confidence: tip.confidence?.toString() || '0',
           entryPrice: tip.entryPrice?.toString() || '',
@@ -1477,19 +1490,82 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async updatePerformanceMetrics() {
-    // Implementation of updatePerformanceMetrics method
+    try {
+      if (this.state.performanceMetrics) {
+        // Update performance tracking
+        this.state.performanceMetrics.lastUpdate = Date.now();
+        
+        // Calculate win rate from signal history (simplified)
+        const recentSignals = Array.from(this.state.signalHistory.values()).slice(-10);
+        if (recentSignals.length > 0) {
+          const wins = recentSignals.filter(s => s.status === 'win').length;
+          this.state.performanceMetrics.winRate = (wins / recentSignals.length) * 100;
+        }
+        
+        console.log('📊 Performance metrics updated:', {
+          signals: this.state.performanceMetrics.signalsGenerated,
+          winRate: this.state.performanceMetrics.winRate.toFixed(1) + '%'
+        });
+      }
+    } catch (error) {
+      console.error('❌ Error updating performance metrics:', error);
+    }
   }
 
   async processSignalQueue() {
-    // Implementation of processSignalQueue method
+    try {
+      // Process any queued signals (simplified implementation)
+      if (this.state.signalHistory.size > 1000) {
+        // Clean up old signals to prevent memory leaks
+        const signals = Array.from(this.state.signalHistory.entries());
+        const oldSignals = signals.slice(0, signals.length - 500);
+        
+        for (const [key] of oldSignals) {
+          this.state.signalHistory.delete(key);
+        }
+        
+        console.log('🧹 Signal queue cleaned up, removed old signals');
+      }
+    } catch (error) {
+      console.error('❌ Error processing signal queue:', error);
+    }
   }
 
   async resetHourlyLimits() {
-    // Implementation of resetHourlyLimits method
+    try {
+      // Reset hourly limits for all users
+      for (const [userId, limits] of this.state.userLimits.entries()) {
+        limits.hourlyCount = 0;
+        this.state.userLimits.set(userId, limits);
+      }
+      console.log('⏰ Hourly limits reset for all users');
+    } catch (error) {
+      console.error('❌ Error resetting hourly limits:', error);
+    }
   }
 
   async resetDailyLimits() {
-    // Implementation of resetDailyLimits method
+    try {
+      // Reset daily limits for all users
+      const today = new Date().toDateString();
+      
+      for (const [userId, limits] of this.state.userLimits.entries()) {
+        if (limits.lastReset !== today) {
+          limits.dailyCount = 0;
+          limits.hourlyCount = 0;
+          limits.lastReset = today;
+          this.state.userLimits.set(userId, limits);
+        }
+      }
+      
+      // Reset system daily signal count
+      this.state.dailySignalCount = 0;
+      this.state.lastSignalDate = today;
+      
+      console.log('📅 Daily limits reset for all users');
+    } catch (error) {
+      console.error('❌ Error resetting daily limits:', error);
+    }
   }
 
   // Helper: Check if US market is open (9:30am-4:00pm EST, weekdays)
@@ -1560,5 +1636,77 @@ export class FerrariTradingSystem extends EventEmitter {
     }
     
     await this.generateSignal(chosen);
+  }
+
+  async analyzeSymbol(symbol) {
+    try {
+      // Get symbol data from cache
+      const symbolData = this.state.priceCache.get(symbol);
+      
+      if (!symbolData || !symbolData.prices || symbolData.prices.length < 20) {
+        console.warn(`⚠️ Insufficient data for ${symbol} analysis`);
+        return null;
+      }
+      
+      // Use existing comprehensive analysis logic
+      return await this.performComprehensiveAnalysis(symbol, symbolData);
+      
+    } catch (error) {
+      console.error(`❌ Error analyzing ${symbol}:`, error);
+      return null;
+    }
+  }
+
+  async canUserReceiveSignal(userId, tip) {
+    try {
+      const userLimits = this.state.userLimits.get(userId) || {
+        dailyCount: 0,
+        hourlyCount: 0,
+        lastSignal: 0,
+        lastReset: new Date().toDateString()
+      };
+      
+      const now = Date.now();
+      const todayString = new Date().toDateString();
+      
+      // Reset daily counts if new day
+      if (userLimits.lastReset !== todayString) {
+        userLimits.dailyCount = 0;
+        userLimits.lastReset = todayString;
+      }
+      
+      // Reset hourly count if more than 1 hour passed
+      if (now - userLimits.lastSignal > 3600000) { // 1 hour
+        userLimits.hourlyCount = 0;
+      }
+      
+      // Check limits
+      const maxDaily = this.config.rateLimiting.maxDailyTips || 5;
+      const maxHourly = this.config.rateLimiting.maxHourlyTips || 2;
+      
+      if (userLimits.dailyCount >= maxDaily) {
+        return false; // Daily limit reached
+      }
+      
+      if (userLimits.hourlyCount >= maxHourly) {
+        return false; // Hourly limit reached
+      }
+      
+      // VIP users bypass some limits
+      if (this.config.rateLimiting.vipUsers.includes(userId)) {
+        return true;
+      }
+      
+      // High priority signals bypass some limits
+      if (tip.strength > (this.config.rateLimiting.priorityThreshold || 4.5)) {
+        return true;
+      }
+      
+      return true; // User can receive signal
+      
+    } catch (error) {
+      console.error(`❌ Error checking user signal limits for ${userId}:`, error);
+      return false; // Default to not sending on error
+    }
   }
 }
