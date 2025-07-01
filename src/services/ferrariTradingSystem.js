@@ -1381,6 +1381,9 @@ export class FerrariTradingSystem extends EventEmitter {
       // BACKWARD COMPATIBILITY FIX #3: Use FCM topic broadcasting like old system
       const sentimentEmoji = tip.sentiment === 'bullish' ? '🚀' : '📉';
       
+      // Generate unique message ID for analytics tracking (matches Firebase Functions)
+      const messageId = `ferrari_${tip.symbol}_${tip.timeframe}_${Date.now()}`;
+      
       const message = {
         notification: {
           title: `🏎️ ${tip.symbol} ${tip.sentiment.toUpperCase()} Signal`,
@@ -1408,7 +1411,8 @@ export class FerrariTradingSystem extends EventEmitter {
           timestamp: tip.timestamp || new Date().toISOString(),
           trackingId: tip.trackingId || '',
           isFerrariSignal: 'true',
-          system: 'ferrari_v2'
+          system: 'ferrari_v2',
+          message_id: messageId // For analytics tracking
         },
         // Use topic broadcasting instead of individual user targeting
         topic: 'trading_tips'
@@ -1417,9 +1421,55 @@ export class FerrariTradingSystem extends EventEmitter {
       const response = await this.messaging.send(message);
       console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${tip.symbol}:`, response);
       
+      // ✅ MISSING FEATURE: Notification analytics tracking (matches Firebase Functions)
+      await this.logNotificationAnalytics({
+        event_type: 'ferrari_signal_sent',
+        message_id: messageId,
+        firebase_message_id: response,
+        symbol: tip.symbol,
+        sentiment: tip.sentiment,
+        timeframe: tip.timeframe,
+        strength: tip.strength,
+        title: message.notification.title,
+        body: message.notification.body,
+        target_topic: 'trading_tips',
+        platform_config: {
+          system: 'ferrari_trading_system',
+          version: 'v2',
+          analysis_level: tip.analysisLevel || 'technical_grade',
+          is_institutional_grade: !!tip.institutionalGrade
+        }
+      });
+      
     } catch (error) {
       console.error('❌ Error sending Ferrari notification:', error);
       throw error;
+    }
+  }
+
+  /**
+   * ✅ NEW FEATURE: Notification analytics tracking (matches Firebase Functions)
+   * Logs notification send events for monitoring and analytics
+   */
+  async logNotificationAnalytics(analyticsData) {
+    if (!this.firebaseReady || !this.db) {
+      console.log('📊 Test mode: Would log notification analytics');
+      return;
+    }
+
+    try {
+      await this.db.collection('notification_analytics').add({
+        ...analyticsData,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        server_timestamp: Date.now(),
+        source_system: 'ferrari_trading_system'
+      });
+      
+      console.log('📊 Ferrari notification analytics logged:', analyticsData.message_id);
+      
+    } catch (error) {
+      console.error('⚠️ Failed to log Ferrari notification analytics:', error);
+      // Don't fail the notification if analytics logging fails
     }
   }
 
