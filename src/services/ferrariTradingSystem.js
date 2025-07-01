@@ -44,11 +44,13 @@ export class FerrariTradingSystem extends EventEmitter {
           // ... expand to 150+ stocks
         ],
         crypto: [
-          'BTC/USD', 'ETH/USD', 'BNB/USD', 'ADA/USD', 'SOL/USD', 'XRP/USD',
-          'DOT/USD', 'DOGE/USD', 'AVAX/USD', 'LUNA/USD', 'LINK/USD', 'UNI/USD',
-          'ALGO/USD', 'ATOM/USD', 'FTT/USD', 'NEAR/USD', 'MANA/USD', 'SAND/USD',
-          'MATIC/USD', 'CRO/USD', 'LRC/USD', 'ENJ/USD', 'GALA/USD', 'CHZ/USD'
-          // ... expand to 50+ crypto pairs
+          // OPTIMIZED: Top 10 most liquid crypto pairs only (reduce noise)
+          'BTC/USD', 'ETH/USD', 'BNB/USD', 'ADA/USD', 'SOL/USD', 
+          'XRP/USD', 'DOT/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD'
+          // REMOVED: Secondary pairs that generate too much noise
+          // 'UNI/USD', 'ALGO/USD', 'ATOM/USD', 'FTT/USD', 'NEAR/USD', 
+          // 'MANA/USD', 'SAND/USD', 'MATIC/USD', 'CRO/USD', 'LRC/USD', 
+          // 'ENJ/USD', 'GALA/USD', 'CHZ/USD'
         ]
       },
       
@@ -1046,10 +1048,35 @@ export class FerrariTradingSystem extends EventEmitter {
       enhancedReasoning.push(`Institutional Confidence: ${analysis.institutionalGrade.confidence.toFixed(1)}%`);
     }
     
+    // BACKWARD COMPATIBILITY FIX #1: Convert neutral sentiment to bullish/bearish for Flutter app
+    let appCompatibleSentiment = analysis.sentiment;
+    if (analysis.sentiment === 'neutral') {
+      // BETTER LOGIC: Determine sentiment based on trading direction (LONG vs SHORT)
+      const entryPrice = analysis.levels.entry;
+      const takeProfit = analysis.levels.takeProfit1;
+      
+      if (entryPrice && takeProfit) {
+        if (takeProfit > entryPrice) {
+          // Take profit higher than entry = LONG position = bullish
+          appCompatibleSentiment = 'bullish';
+          enhancedReasoning.unshift('📈 Neutral signal converted to BULLISH (LONG position: target above entry)');
+        } else {
+          // Take profit lower than entry = SHORT position = bearish  
+          appCompatibleSentiment = 'bearish';
+          enhancedReasoning.unshift('📉 Neutral signal converted to BEARISH (SHORT position: target below entry)');
+        }
+      } else {
+        // Fallback to price momentum if no clear levels
+        const priceChange = analysis.priceChangePercent || 0;
+        appCompatibleSentiment = priceChange >= 0 ? 'bullish' : 'bearish';
+        enhancedReasoning.unshift(`📊 Neutral signal converted to ${appCompatibleSentiment} based on price momentum (fallback)`);
+      }
+    }
+    
     return {
       symbol: analysis.symbol,
-      timeframe: timeframe, // Mobile app compatibility
-      sentiment: analysis.sentiment,
+      timeframe: timeframe, // Mobile app compatibility - FIXED: Now includes timeframe
+      sentiment: appCompatibleSentiment, // Now guaranteed to be 'bullish' or 'bearish'
       strength: analysis.finalStrength,
       confidence: Math.min(95, analysis.finalStrength * 19),
       
@@ -1074,7 +1101,7 @@ export class FerrariTradingSystem extends EventEmitter {
       
       // Analysis data structure for mobile app - ENHANCED
       analysis: {
-        sentiment: analysis.sentiment,
+        sentiment: appCompatibleSentiment, // Use compatible sentiment here too
         strength: analysis.finalStrength,
         entryPrice: analysis.levels.entry,
         stopLoss: analysis.levels.stopLoss,
@@ -1108,22 +1135,23 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   determineTimeframe(analysis) {
-    // Smart timeframe assignment based on signal characteristics
+    // BACKWARD COMPATIBILITY FIX #2: Map to Flutter app's expected timeframe values
+    // Flutter app expects: 'short_term', 'mid_term', 'long_term' (with underscores)
     const strength = analysis.finalStrength;
     const riskReward = analysis.riskRewardRatio;
     
     // High strength, high risk/reward = short term (quick moves)
     if (strength >= 4.5 && riskReward >= 3.0) {
-      return 'short_term';
+      return 'short_term'; // Flutter deep-link compatibility
     }
     
     // Good strength, balanced risk/reward = mid term
     if (strength >= 4.0 && riskReward >= 2.5) {
-      return 'mid_term';
+      return 'mid_term'; // Flutter deep-link compatibility
     }
     
     // Lower strength but still quality = long term (more time to develop)
-    return 'long_term';
+    return 'long_term'; // Flutter deep-link compatibility
   }
 
   buildReasoning(symbol, sentiment, strength, priceChange) {
@@ -1238,55 +1266,53 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async sendToEligibleUsers(tip, eligibleUsers) {
     if (!this.firebaseReady || !this.messaging) {
-      console.log('📱 Test mode: Would send notification for:', tip.symbol, 'to', eligibleUsers.length, 'users');
-      console.log('📱 Notification preview:', {});
+      console.log('📱 Test mode: Would send Ferrari notification for:', tip.symbol);
       return;
     }
     
     try {
-      // Send notification to eligible users
-      const notification = {
-        title: `New Ferrari Signal: ${tip.symbol}`,
-        body: `A new signal is available for ${tip.symbol}. Sentiment: ${tip.sentiment.toUpperCase()}, Strength: ${tip.strength.toFixed(2)}/5.0`,
-        icon: tip.company.logoUrl,
-        click_action: 'https://www.ferrari.com'
-      };
+      // BACKWARD COMPATIBILITY FIX #3: Use FCM topic broadcasting like old system
+      const sentimentEmoji = tip.sentiment === 'bullish' ? '🚀' : '📉';
       
-      const payload = {
-        to: eligibleUsers.map(u => u.userId),
-        notification,
+      const message = {
+        notification: {
+          title: `🏎️ ${tip.symbol} ${tip.sentiment.toUpperCase()} Signal`,
+          body: `${sentimentEmoji} ${tip.symbol} ${tip.sentiment.toUpperCase()} @ $${tip.entryPrice?.toFixed(2) || 'TBD'}\nStrength: ${tip.strength.toFixed(1)}/5 | RR: ${tip.riskRewardRatio?.toFixed(2) || 'N/A'}\nTP: $${tip.takeProfit?.toFixed(2) || 'TBD'} | SL: $${tip.stopLoss?.toFixed(2) || 'TBD'}`
+        },
+        // CRITICAL: All data values must be strings for FCM compatibility
         data: {
+          type: 'trading_tip',
           symbol: tip.symbol,
+          timeframe: tip.timeframe, // BACKWARD COMPATIBILITY: For deep-linking
+          target_timeframe: tip.timeframe, // CRITICAL: Flutter navigation
           sentiment: tip.sentiment,
-          strength: tip.strength.toFixed(2),
-          confidence: tip.confidence.toFixed(2),
-          entryPrice: tip.levels.entry.toFixed(2),
-          stopLoss: tip.levels.stopLoss.toFixed(2),
-          takeProfit: tip.levels.takeProfit1.toFixed(2),
-          takeProfit2: tip.levels.takeProfit2.toFixed(2),
-          riskRewardRatio: tip.riskRewardRatio.toFixed(2),
-          marketContext: JSON.stringify(tip.marketContext),
-          reasoning: tip.reasoning.join('\n'),
-          companyName: tip.company.name,
-          companyLogoUrl: tip.company.logoUrl,
-          companySector: tip.company.sector,
-          companyBusiness: tip.company.business,
-          companyIsCrypto: tip.company.isCrypto,
-          analysisLevel: tip.analysisLevel,
-          timestamp: tip.timestamp,
-          isPremium: tip.isPremium,
-          isFerrariSignal: tip.isFerrariSignal,
-          isInstitutionalGrade: tip.isInstitutionalGrade,
-          trackingId: tip.trackingId,
-          expiresAt: tip.expiresAt.toISOString()
-        }
+          strength: tip.strength.toString(),
+          confidence: tip.confidence?.toString() || '0',
+          entryPrice: tip.entryPrice?.toString() || '',
+          stopLoss: tip.stopLoss?.toString() || '',
+          takeProfit: tip.takeProfit?.toString() || '',
+          riskRewardRatio: tip.riskRewardRatio?.toString() || '',
+          reasoning: JSON.stringify(tip.reasoning || []),
+          companyName: tip.company?.name || tip.symbol,
+          companyLogoUrl: tip.company?.logoUrl || '',
+          companySector: tip.company?.sector || '',
+          companyBusiness: tip.company?.business || '',
+          companyIsCrypto: tip.company?.isCrypto?.toString() || 'false',
+          timestamp: tip.timestamp || new Date().toISOString(),
+          trackingId: tip.trackingId || '',
+          isFerrariSignal: 'true',
+          system: 'ferrari_v2'
+        },
+        // Use topic broadcasting instead of individual user targeting
+        topic: 'trading_tips'
       };
       
-      await this.messaging.sendMulticast(payload);
+      const response = await this.messaging.send(message);
+      console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${tip.symbol}:`, response);
       
-      console.log(`✅ Ferrari signal notification sent to ${eligibleUsers.length} users`);
     } catch (error) {
-      console.error('❌ Error sending Ferrari signal notification:', error);
+      console.error('❌ Error sending Ferrari notification:', error);
+      throw error;
     }
   }
 
