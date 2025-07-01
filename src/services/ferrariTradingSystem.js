@@ -174,187 +174,142 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async connectAlpacaFeed(symbols) {
-    console.log(`🔌 Connecting to Alpaca with ${symbols.length} symbols:`, symbols.slice(0, 5));
-    const ws = new WebSocket('wss://stream.data.alpaca.markets/v2/iex');
-    
-    // Track WebSocket for graceful shutdown
-    this.state.websockets.add(ws);
-    
-    ws.on('open', () => {
-      console.log('🟢 Alpaca feed connected - sending authentication...');
-      
-      // Authenticate
-      const authMsg = {
-        action: 'auth',
-        key: process.env.ALPACA_API_KEY,
-        secret: process.env.ALPACA_SECRET_KEY
-      };
-      console.log('🔐 Alpaca auth message:', { action: authMsg.action, key: authMsg.key ? '***' : 'MISSING' });
-      ws.send(JSON.stringify(authMsg));
-    });
+    if (!this.alpacaSocket && this.config.dataFeeds.alpaca.enabled) {
+      console.log('🔌 Connecting to Alpaca feed...');
+      this.alpacaSocket = new WebSocket(this.config.dataFeeds.alpaca.websocketUrl);
 
-    ws.on('message', (data) => {
-      if (!this.state.isShuttingDown) {
+      this.alpacaSocket.onopen = () => {
+        console.log('🟢 Alpaca feed connected');
+        // Authenticate
+        this.alpacaSocket.send(JSON.stringify({
+          action: 'auth',
+          key: this.config.dataFeeds.alpaca.keyId,
+          secret: this.config.dataFeeds.alpaca.secretKey
+        }));
+      };
+
+      this.alpacaSocket.onmessage = (event) => {
         try {
-          const messages = JSON.parse(data);
-          console.log(`📨 Alpaca raw message:`, messages);
-          
-          // Handle authentication response
-          if (Array.isArray(messages)) {
-            messages.forEach(msg => {
-              if (msg.T === 'success' && msg.msg === 'authenticated') {
-                console.log('✅ Alpaca authenticated successfully! Subscribing to symbols...');
-                
-                // Subscribe to trades for ALL symbols (log if too many)
-                const subscribeMsg = {
-                  action: 'subscribe',
-                  trades: symbols // All symbols
-                };
-                if (symbols.length > 50) {
-                  console.warn(`⚠️ Subscribing to a large number of Alpaca symbols: ${symbols.length}`);
-                }
-                ws.send(JSON.stringify(subscribeMsg));
-                console.log('📡 Alpaca subscribing to:', subscribeMsg);
-                
-              } else if (msg.T === 'error') {
-                console.error('❌ Alpaca error:', msg);
-              } else if (msg.T === 'subscription') {
-                console.log('✅ Alpaca subscription confirmed:', msg);
-              } else {
-                this.processAlpacaMessage(msg);
-              }
-            });
+          const messages = JSON.parse(event.data);
+          for (const msg of Array.isArray(messages) ? messages : [messages]) {
+            if (msg.T === 'success' && msg.msg === 'authenticated') {
+              console.log('✅ Alpaca authenticated successfully! Subscribing to symbols...');
+              // Subscribe to trade feeds
+              this.alpacaSocket.send(JSON.stringify({
+                action: 'subscribe',
+                trades: symbols
+              }));
+            } else if (msg.T === 't') {
+              this.processAlpacaMessage(msg);
+            }
           }
         } catch (error) {
-          console.error('❌ Error parsing Alpaca message:', error, 'Raw data:', data.toString());
+          console.error('❌ Error parsing Alpaca message:', error);
         }
-      }
-    });
+      };
 
-    ws.on('close', (code, reason) => {
-      console.log(`🔴 Alpaca feed disconnected: Code ${code}, Reason: ${reason}`);
-      this.state.websockets.delete(ws);
-    });
+      this.alpacaSocket.onerror = (error) => {
+        console.error('❌ Alpaca WebSocket error:', error);
+      };
 
-    ws.on('error', (error) => {
-      console.error('❌ Alpaca feed error:', error);
-      this.state.websockets.delete(ws);
-    });
-
-    return ws;
+      this.alpacaSocket.onclose = () => {
+        console.log('🔴 Alpaca feed disconnected');
+        this.alpacaSocket = null;
+        // Reconnect after delay
+        setTimeout(() => this.connectAlpacaFeed(symbols), 5000);
+      };
+    }
   }
 
   async connectBinanceFeed(cryptoSymbols) {
-    console.log(`🔌 Connecting to Binance with ${cryptoSymbols.length} crypto symbols:`, cryptoSymbols.slice(0, 5));
-    
-    // Convert crypto symbols to Binance format (BTC/USD -> btcusdt)
-    const binanceSymbols = cryptoSymbols.map(s => {
-      const symbol = s.replace('/', '').toLowerCase();
-      // Convert USD to USDT for Binance
-      return symbol.replace('usd', 'usdt');
-    });
-    
-    console.log('🔄 Converted symbols for Binance:', binanceSymbols.slice(0, 5));
-    
-    // Create stream URL for ticker data (24hr stats)
-    const streamUrl = `wss://stream.binance.com:9443/ws/${binanceSymbols.map(s => `${s}@ticker`).join('/')}`;
-    console.log('🌐 Binance stream URL:', streamUrl.substring(0, 100) + '...');
-    
-    const ws = new WebSocket(streamUrl);
-    
-    // Track WebSocket for graceful shutdown
-    this.state.websockets.add(ws);
-    
-    ws.on('open', () => {
-      console.log('🟢 Binance crypto feed connected successfully');
-    });
+    if (!this.binanceSocket && this.config.dataFeeds.binance.enabled) {
+      // Convert symbols to Binance format (BTC/USD -> BTCUSDT)
+      const binanceSymbols = cryptoSymbols.map(symbol => 
+        symbol.replace('/', '').replace('USD', 'USDT').toLowerCase()
+      );
+      
+      const streamParams = binanceSymbols.map(symbol => `${symbol}@trade`).join('/');
+      const wsUrl = `${this.config.dataFeeds.binance.websocketUrl}/ws/${streamParams}`;
+      
+      console.log('🔌 Connecting to Binance feed...');
+      this.binanceSocket = new WebSocket(wsUrl);
 
-    ws.on('message', (data) => {
-      if (!this.state.isShuttingDown) {
+      this.binanceSocket.onopen = () => {
+        console.log('🟢 Binance crypto feed connected successfully');
+      };
+
+      this.binanceSocket.onmessage = (event) => {
         try {
-          const message = JSON.parse(data);
-          if (message.s) { // Ticker message
-            // Convert BTCUSDT back to BTC/USD format
-            const symbol = message.s.replace('USDT', '/USD').toUpperCase();
-            
-            // Only log Bitcoin-related messages to reduce spam
-            if (symbol.includes('BTC')) {
-              console.log(`🔍 Processing Binance message:`, { symbol: message.s, price: message.c, change: message.P });
-              console.log(`📈 Binance ticker: ${symbol} @ $${message.c} (${message.P}% change)`);
-            }
-            
+          const data = JSON.parse(event.data);
+          if (data.e === 'trade') {
+            // Convert back to our format
+            const symbol = data.s.replace('USDT', '/USD').toUpperCase();
             this.updatePrice({
-              symbol,
-              price: parseFloat(message.c),
-              volume: parseFloat(message.v),
-              changePercent: parseFloat(message.P),
-              timestamp: message.E,
+              symbol: symbol,
+              price: parseFloat(data.p),
+              timestamp: Date.now(),
               source: 'binance'
             });
           }
         } catch (error) {
-          console.error('❌ Error parsing Binance message:', error, 'Raw data:', data.toString().substring(0, 200));
+          console.error('❌ Error parsing Binance message:', error);
         }
-      }
-    });
+      };
 
-    ws.on('close', (code, reason) => {
-      console.log(`🔴 Binance feed disconnected: Code ${code}, Reason: ${reason}`);
-      this.state.websockets.delete(ws);
-    });
+      this.binanceSocket.onerror = (error) => {
+        console.error('❌ Binance WebSocket error:', error);
+      };
 
-    ws.on('error', (error) => {
-      console.error('❌ Binance feed error:', error);
-      this.state.websockets.delete(ws);
-    });
-
-    return ws;
+      this.binanceSocket.onclose = () => {
+        console.log('🔴 Binance feed disconnected');
+        this.binanceSocket = null;
+        // Reconnect after delay
+        setTimeout(() => this.connectBinanceFeed(cryptoSymbols), 5000);
+      };
+    }
   }
 
   async connectFinnhubFeed(symbols) {
-    console.log(`🔌 Connecting to Finnhub with ${symbols.length} symbols:`, symbols.slice(0, 5));
-    const ws = new WebSocket(`wss://ws.finnhub.io?token=${process.env.FINNHUB_API_KEY}`);
-    
-    // Track WebSocket for graceful shutdown
-    this.state.websockets.add(ws);
-    
-    ws.on('open', () => {
-      console.log('🟢 Finnhub feed connected - subscribing to symbols...');
-      
-      // Subscribe to ALL symbols (log if too many)
-      if (symbols.length > 50) {
-        console.warn(`⚠️ Subscribing to a large number of Finnhub symbols: ${symbols.length}`);
-      }
-      symbols.forEach(symbol => {
-        const subscribeMsg = { type: 'subscribe', symbol };
-        ws.send(JSON.stringify(subscribeMsg));
-      });
-      console.log('📡 Finnhub subscribing to:', symbols);
-    });
+    if (!this.finnhubSocket && this.config.dataFeeds.finnhub.enabled) {
+      console.log('🔌 Connecting to Finnhub feed...');
+      const wsUrl = `${this.config.dataFeeds.finnhub.websocketUrl}?token=${this.config.dataFeeds.finnhub.apiKey}`;
+      this.finnhubSocket = new WebSocket(wsUrl);
 
-    ws.on('message', (data) => {
-      if (!this.state.isShuttingDown) {
-        try {
-          const message = JSON.parse(data);
-          console.log(`📨 Finnhub raw message:`, message);
-          this.processFinnhubMessage(message);
-        } catch (error) {
-          console.error('❌ Error parsing Finnhub message:', error, 'Raw data:', data.toString());
+      this.finnhubSocket.onopen = () => {
+        console.log('🟢 Finnhub feed connected');
+        // Subscribe to symbols
+        for (const symbol of symbols) {
+          this.finnhubSocket.send(JSON.stringify({
+            type: 'subscribe',
+            symbol: symbol
+          }));
         }
-      }
-    });
+      };
 
-    ws.on('close', (code, reason) => {
-      console.log(`🔴 Finnhub feed disconnected: Code ${code}, Reason: ${reason}`);
-      this.state.websockets.delete(ws);
-    });
+      this.finnhubSocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'trade' && data.data) {
+            for (const trade of data.data) {
+              this.processFinnhubMessage(trade);
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error parsing Finnhub message:', error);
+        }
+      };
 
-    ws.on('error', (error) => {
-      console.error('❌ Finnhub feed error:', error);
-      this.state.websockets.delete(ws);
-    });
+      this.finnhubSocket.onerror = (error) => {
+        console.error('❌ Finnhub WebSocket error:', error);
+      };
 
-    return ws;
+      this.finnhubSocket.onclose = () => {
+        console.log('🔴 Finnhub feed disconnected');
+        this.finnhubSocket = null;
+        // Reconnect after delay
+        setTimeout(() => this.connectFinnhubFeed(symbols), 5000);
+      };
+    }
   }
 
   processAlpacaMessage(msg) {
@@ -463,6 +418,18 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async checkTradingOpportunity(symbol, symbolData) {
     try {
+      // ✅ OPTION 2: Skip crypto analysis during US market hours (9:30 AM - 4:00 PM ET)
+      // This implements stocks-only policy during market hours for maximum efficiency
+      const isUSMarketOpen = this.isUSMarketOpen();
+      const isCrypto = this.config.watchlist.crypto.includes(symbol);
+      
+      if (isUSMarketOpen && isCrypto) {
+        // Skip crypto analysis entirely during US market hours
+        // This saves CPU, API calls, and guarantees stocks-only during trading hours
+        console.log(`⏭️  Skipping crypto analysis during US market hours: ${symbol} (market open 9:30 AM - 4:00 PM ET)`);
+        return;
+      }
+      
       // Rate limiting: Don't analyze the same symbol too frequently
       const now = Date.now();
       const lastAnalysis = symbolData.lastAnalysis || 0;
@@ -472,8 +439,10 @@ export class FerrariTradingSystem extends EventEmitter {
         return;
       }
       
-      // Log analysis trigger
-      console.log(`🔍 ANALYZING: ${symbol} | Price: $${symbolData.currentPrice} | Change: ${(symbolData.changePercent || 0).toFixed(2)}%`);
+      // Log analysis trigger with market context
+      const marketStatus = isUSMarketOpen ? 'MARKET OPEN' : 'MARKET CLOSED';
+      const symbolType = isCrypto ? 'CRYPTO' : 'STOCK';
+      console.log(`🔍 ANALYZING [${marketStatus}]: ${symbol} (${symbolType}) | Price: $${symbolData.currentPrice} | Change: ${(symbolData.changePercent || 0).toFixed(2)}%`);
       
       symbolData.lastAnalysis = now;
       
@@ -593,62 +562,82 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async combineTimeframeAnalysis(symbol, analyses, symbolData) {
-    const validAnalyses = Object.values(analyses).filter(a => a && a.analysis);
+    // Filter valid analyses
+    const validAnalyses = analyses.filter(a => a !== null);
     
-    if (validAnalyses.length === 0) return null;
-
-    // Consensus building
-    const sentiments = validAnalyses.map(a => a.analysis.sentiment);
-    const strengths = validAnalyses.map(a => a.analysis.strength || 0);
+    if (validAnalyses.length === 0) {
+      return null;
+    }
     
-    // Majority sentiment
-    const bullishCount = sentiments.filter(s => s === 'bullish').length;
-    const bearishCount = sentiments.filter(s => s === 'bearish').length;
+    // Enhanced consensus building with institutional insights
+    const sentiments = validAnalyses.map(a => a.sentiment);
+    const strengths = validAnalyses.map(a => a.strength);
+    const consensusSentiment = this.getMostFrequent(sentiments);
+    const avgStrength = strengths.reduce((sum, s) => sum + s, 0) / strengths.length;
     
-    let consensusSentiment = 'neutral';
-    if (bullishCount > bearishCount + 1) consensusSentiment = 'bullish';
-    else if (bearishCount > bullishCount + 1) consensusSentiment = 'bearish';
+    // Current price from latest data
+    const currentPrice = symbolData.prices[symbolData.prices.length - 1]?.price || 0;
+    const priceChangePercent = symbolData.priceChangePercent || 0;
     
-    // Average strength (weighted by timeframe importance)
-    const weights = { '1min': 1, '5min': 2, '15min': 3, '1hour': 4 };
-    let weightedStrength = 0;
-    let totalWeight = 0;
+    // Enhanced ATR calculation with API backfill capability
+    const atr = await this.calculateATR(symbolData.priceHistory, symbol, symbol.includes('/') ? 'crypto' : 'stock');
     
-    Object.entries(analyses).forEach(([tf, analysis]) => {
-      if (analysis?.analysis?.strength) {
-        const weight = weights[tf] || 1;
-        weightedStrength += analysis.analysis.strength * weight;
-        totalWeight += weight;
-      }
-    });
-    
-    const avgStrength = totalWeight > 0 ? weightedStrength / totalWeight : 0;
-
-    // Current price and levels
-    const currentPrice = symbolData.currentPrice;
-    const priceChange = symbolData.currentPrice - symbolData.prices[symbolData.prices.length - 2].price;
-    const priceChangePercent = (priceChange / symbolData.prices[symbolData.prices.length - 2].price) * 100;
-
-    // Calculate dynamic levels (await ATR with backfill)
-    const type = symbol.includes('/') ? 'crypto' : 'stock';
-    const atr = await this.calculateATR(symbolData.prices, symbol, type);
+    // Calculate dynamic trading levels
     const levels = this.calculateDynamicLevels(currentPrice, atr, consensusSentiment);
-
-    console.log(`🔧 DEBUG: ${symbol} | ATR: ${atr.toFixed(6)} | Price: ${currentPrice} | Sentiment: ${consensusSentiment}`);
-    console.log(`🔧 DEBUG: ${symbol} | Levels:`, JSON.stringify(levels, null, 2));
-
-    return {
+    
+    if (!levels) {
+      return null;
+    }
+    
+    // Get institutional analysis
+    let institutionalGrade = null;
+    try {
+      institutionalGrade = await institutionalAnalysisService.getInstitutionalAnalysis(symbol, {
+        sentiment: consensusSentiment,
+        strength: avgStrength,
+        currentPrice,
+        levels,
+        timeframes: validAnalyses.map(a => a.timeframe)
+      });
+    } catch (error) {
+      // Institutional analysis is optional
+    }
+    
+    // Build enhanced reasoning array
+    const reasoning = this.buildReasoning(symbol, consensusSentiment, avgStrength, priceChangePercent);
+    
+    // Get market context for final adjustments
+    let marketContext;
+    try {
+      marketContext = await this.getMarketContext();
+    } catch (error) {
+      // Use default context if service fails
+      marketContext = {
+        marketTrend: 'unknown',
+        volatility: 'normal',
+        isMarketHours: this.isMarketHours(),
+        sector: 'general'
+      };
+    }
+    
+    // Calculate final strength with all factors
+    const finalAnalysis = {
       symbol,
       sentiment: consensusSentiment,
       strength: avgStrength,
-      currentPrice,
-      priceChange,
-      priceChangePercent,
       levels,
-      timeframeAnalyses: analyses,
-      reasoning: this.buildReasoning(symbol, consensusSentiment, avgStrength, priceChangePercent),
+      reasoning,
+      timeframes: validAnalyses.map(a => a.timeframe),
+      currentPrice,
+      priceChangePercent,
+      marketContext,
+      institutionalGrade,
       timestamp: new Date().toISOString()
     };
+    
+    finalAnalysis.finalStrength = this.calculateFinalStrength(finalAnalysis);
+    
+    return finalAnalysis;
   }
 
   /**
@@ -735,13 +724,12 @@ export class FerrariTradingSystem extends EventEmitter {
   async calculateATR(priceHistory, symbol = '', type = '') {
     // Defensive: must be array with at least 2 elements
     if (!Array.isArray(priceHistory) || priceHistory.length < 2 || priceHistory.some(p => typeof p.close !== 'number' || typeof p.high !== 'number' || typeof p.low !== 'number')) {
-      console.warn(`⚠️ ATR: priceHistory missing/invalid for ${symbol}. Attempting backfill...`);
-      // Try to fetch and retry
+      // Normal initialization - fetch historical data for new symbols
       const fetched = await this.fetchHistoricalOHLCV(symbol, type);
       if (Array.isArray(fetched) && fetched.length >= 2) {
         priceHistory = fetched;
       } else {
-        console.warn(`⚠️ ATR: Backfill failed for ${symbol}. Using fallback.`);
+        // Fallback for symbols with no historical data available
         return 0.001;
       }
     }
@@ -777,14 +765,13 @@ export class FerrariTradingSystem extends EventEmitter {
     const currentPrice = prices[0];
     const minimumATR = currentPrice * 0.001;
     const calculatedATR = Math.max(avgVariation, minimumATR);
-    console.log(`🔧 DEBUG ATR: ${symbol} | Calculated: ${calculatedATR.toFixed(6)} | Price: ${currentPrice} | Points: ${prices.length}`);
     return calculatedATR;
   }
 
   calculateDynamicLevels(price, atr, sentiment) {
     // Ensure we have valid inputs
     if (!price || !atr || atr <= 0) {
-      console.warn(`⚠️ Invalid inputs for level calculation: price=${price}, atr=${atr}`);
+      console.error(`❌ Invalid inputs for level calculation: ${price}, atr=${atr}`);
       return null;
     }
     
@@ -833,7 +820,7 @@ export class FerrariTradingSystem extends EventEmitter {
         };
         
       default:
-        console.warn(`⚠️ Unknown sentiment: ${sentiment}, defaulting to neutral`);
+        console.error(`❌ Unknown sentiment: ${sentiment}, defaulting to neutral`);
         return {
           entry: price,
           stopLoss: price - (atr * 2.0),
@@ -905,11 +892,6 @@ export class FerrariTradingSystem extends EventEmitter {
   passesQualityGates(analysis) {
     const gates = this.config.qualityGates;
     
-    console.log(`🔧 DEBUG Quality Gates: ${analysis.symbol} | Has levels: ${!!analysis.levels} | Strength: ${analysis.finalStrength}`);
-    if (analysis.levels) {
-      console.log(`🔧 DEBUG Levels: Entry: ${analysis.levels.entry}, Stop: ${analysis.levels.stopLoss}, TP1: ${analysis.levels.takeProfit1}`);
-    }
-    
     // Minimum strength
     if (analysis.finalStrength < gates.minimumStrength) {
       return false;
@@ -920,7 +902,6 @@ export class FerrariTradingSystem extends EventEmitter {
         analysis.levels.entry === undefined || 
         analysis.levels.stopLoss === undefined || 
         analysis.levels.takeProfit1 === undefined) {
-      console.warn(`⚠️ Missing trading levels for ${analysis.symbol}`);
       return false;
     }
     
@@ -929,14 +910,11 @@ export class FerrariTradingSystem extends EventEmitter {
     const reward = Math.abs(analysis.levels.takeProfit1 - analysis.levels.entry);
     const riskReward = risk > 0 ? reward / risk : 0;
     
-    console.log(`🔧 DEBUG RR: ${analysis.symbol} | Risk: ${risk.toFixed(6)} | Reward: ${reward.toFixed(6)} | RR: ${riskReward.toFixed(2)}`);
-    
-    // ALWAYS set riskRewardRatio for debug purposes
+    // Set riskRewardRatio on analysis for use in tip creation
     analysis.riskRewardRatio = riskReward;
     
-    // Check if RR meets minimum requirement (with small tolerance for floating point precision)
-    const tolerance = 0.001;
-    if (riskReward < (gates.minimumRiskReward - tolerance)) {
+    // Minimum risk/reward ratio
+    if (riskReward < gates.minimumRiskReward) {
       return false;
     }
     
@@ -1284,7 +1262,7 @@ export class FerrariTradingSystem extends EventEmitter {
 
   async saveTipToFirebase(tip) {
     if (!this.firebaseReady || !this.db) {
-      console.log('💾 Test mode: Would save tip to Firebase collections');
+      console.log('💾 Test mode: Would save tip to Firebase');
       return { success: true };
     }
 
@@ -1292,33 +1270,19 @@ export class FerrariTradingSystem extends EventEmitter {
       const { timeframe } = tip;
       const timestamp = admin.firestore.FieldValue.serverTimestamp();
       
-      // BACKWARD COMPATIBILITY FIX #4: Save to multiple collections for seamless transition
-      // 1. ferrari_tips (new Ferrari system collection)
-      await this.db.collection('ferrari_tips').doc(timeframe).set({
-        ...tip,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        source: 'ferrari_trading_system'
-      }, { merge: true });
-      
-      // 2. trading_tips (old system collection for app compatibility)
-      await this.db.collection('trading_tips').doc(timeframe).set({
-        ...tip,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      }, { merge: true });
-      
-      // 3. latest_tips (current active tips for app)
+      // ✅ SIMPLIFIED: Only save to latest_tips collection (what Flutter app reads)
       await this.db.collection('latest_tips').doc(timeframe).set({
         ...tip,
         createdAt: timestamp,
-        updatedAt: timestamp
+        updatedAt: timestamp,
+        source: 'ferrari_trading_system',
+        isFerrariSignal: true
       }, { merge: true });
 
-      // ✅ MISSING FEATURE: Update app statistics like Firebase Functions
+      // ✅ Update app statistics like Firebase Functions
       await this.updateAppStats();
       
-      console.log(`💾 Ferrari tip saved to Firebase collections: ${tip.symbol} (${timeframe})`);
+      console.log(`💾 Ferrari tip saved to latest_tips: ${tip.symbol} (${timeframe})`);
       
       return { success: true };
     } catch (error) {
@@ -1525,64 +1489,59 @@ export class FerrariTradingSystem extends EventEmitter {
     return currentTime >= marketStart && currentTime <= marketEnd;
   }
 
-  // Helper: Check if we can send a signal (daily/hourly limits)
-  canSendSignalNow() {
-    const now = Date.now();
-    const today = new Date().toDateString();
-    const todaySignals = this.state.dailySignalCount || 0;
-    const maxDailySignals = this.config.rateLimiting.maxDailyTips || 5;
-    const lastSignalTime = this.state.lastSignalTimestamp || 0;
-    const oneHour = 60 * 60 * 1000;
-    if (todaySignals >= maxDailySignals) {
-      console.log(`⚠️ Daily signal limit reached (${todaySignals}/${maxDailySignals})`);
-      return false;
-    }
-    if (now - lastSignalTime < oneHour) {
-      const mins = Math.ceil((oneHour - (now - lastSignalTime)) / 60000);
-      console.log(`⚠️ Hourly signal limit: must wait ${mins} more min(s)`);
-      return false;
-    }
-    return true;
-  }
-
-  // Helper: Mark signal sent (update lastSignalTimestamp)
-  markSignalSent() {
-    this.state.lastSignalTimestamp = Date.now();
-    this.state.dailySignalCount = (this.state.dailySignalCount || 0) + 1;
-  }
-
-  // Main signal selection logic: prefer stocks during US market hours, crypto otherwise
+  // ✅ UPDATED: Signal selection logic with crypto blocking during market hours
+  // NOTE: Crypto analysis is now blocked during US market hours (9:30 AM - 4:00 PM ET)
+  // This guarantees stocks-only during trading hours for maximum relevance
   async selectAndGenerateSignal() {
+    const marketOpen = this.isUSMarketOpen();
+    console.log(`🏪 Market Status: ${marketOpen ? 'OPEN (Stocks Priority)' : 'CLOSED (Crypto Priority)'}`);
+    
     // Gather all analyses ready for signal
     const stockCandidates = [];
     const cryptoCandidates = [];
+    
+    // Always analyze stocks
     for (const symbol of this.config.watchlist.stocks) {
       const analysis = await this.analyzeSymbol(symbol);
       if (analysis && this.passesQualityGates(analysis)) {
         stockCandidates.push(analysis);
       }
     }
+    
+    // Only analyze crypto when market is closed (thanks to checkTradingOpportunity blocking)
+    // But we still check here for any crypto that might have been analyzed before market opened
     for (const symbol of this.config.watchlist.crypto) {
       const analysis = await this.analyzeSymbol(symbol);
       if (analysis && this.passesQualityGates(analysis)) {
         cryptoCandidates.push(analysis);
       }
     }
-    const marketOpen = this.isUSMarketOpen();
+    
     let chosen = null;
-    if (marketOpen && stockCandidates.length > 0) {
-      chosen = stockCandidates[0];
-      console.log('📈 Market open: preferring stock signal:', chosen.symbol);
-    } else if (cryptoCandidates.length > 0) {
-      chosen = cryptoCandidates[0];
-      console.log('💹 Market closed or no stocks: preferring crypto signal:', chosen.symbol);
-    } else if (stockCandidates.length > 0) {
-      chosen = stockCandidates[0];
-      console.log('⚠️ No crypto signals, fallback to stock:', chosen.symbol);
+    
+    if (marketOpen) {
+      // ✅ MARKET OPEN (9:30 AM - 4:00 PM ET): Stocks-only policy
+      if (stockCandidates.length > 0) {
+        chosen = stockCandidates[0];
+        console.log('📈 Market open: stocks-only policy - selected stock signal:', chosen.symbol);
+      } else {
+        console.log('⚠️ Market open but no stock signals available (crypto blocked during market hours)');
+        return;
+      }
     } else {
-      console.log('❌ No valid signals available.');
-      return;
+      // ✅ MARKET CLOSED: Prefer crypto, fallback to stocks
+      if (cryptoCandidates.length > 0) {
+        chosen = cryptoCandidates[0];
+        console.log('💹 Market closed: preferring crypto signal:', chosen.symbol);
+      } else if (stockCandidates.length > 0) {
+        chosen = stockCandidates[0];
+        console.log('📈 Market closed: no crypto signals, using stock signal:', chosen.symbol);
+      } else {
+        console.log('❌ No valid signals available (market closed, no crypto or stock signals)');
+        return;
+      }
     }
+    
     await this.generateSignal(chosen);
   }
 }
