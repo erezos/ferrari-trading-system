@@ -561,8 +561,8 @@ export class FerrariTradingSystem extends EventEmitter {
   }
 
   async combineTimeframeAnalysis(symbol, analyses, symbolData) {
-    // Filter valid analyses
-    const validAnalyses = analyses.filter(a => a !== null);
+    // Convert analyses object to array and filter valid analyses
+    const validAnalyses = Object.values(analyses).filter(a => a !== null);
     
     if (validAnalyses.length === 0) {
       return null;
