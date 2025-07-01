@@ -426,7 +426,6 @@ export class FerrariTradingSystem extends EventEmitter {
       if (isUSMarketOpen && isCrypto) {
         // Skip crypto analysis entirely during US market hours
         // This saves CPU, API calls, and guarantees stocks-only during trading hours
-        console.log(`⏭️  Skipping crypto analysis during US market hours: ${symbol} (market open 9:30 AM - 4:00 PM ET)`);
         return;
       }
       
