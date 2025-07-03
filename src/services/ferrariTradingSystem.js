@@ -571,21 +571,6 @@ export class FerrariTradingSystem extends EventEmitter {
       return null;
     }
     
-    // Debug logging to understand what we're working with
-    console.log(`📊 ${symbol} analysis summary:`, {
-      totalAnalyses: validAnalyses.length,
-      extractedSentiments: sentiments,
-      extractedStrengths: strengths,
-      timeframes: validAnalyses.map(a => a.timeframe || 'unknown'),
-      rawStructures: validAnalyses.map(a => ({
-        hasNestedAnalysis: !!(a.analysis),
-        nestedSentiment: a.analysis?.sentiment,
-        flatSentiment: a.sentiment,
-        nestedStrength: a.analysis?.strength,
-        flatStrength: a.strength
-      }))
-    });
-    
     // Enhanced consensus building with institutional insights
     // FIX: Handle both flat and nested analysis structures
     const sentiments = validAnalyses.map(a => {
@@ -603,6 +588,21 @@ export class FerrariTradingSystem extends EventEmitter {
       if (typeof a.strength === 'number') return a.strength;
       return null;
     }).filter(s => typeof s === 'number'); // Filter out undefined strengths
+    
+    // Debug logging to understand what we're working with (MOVED AFTER variable definitions)
+    console.log(`📊 ${symbol} analysis summary:`, {
+      totalAnalyses: validAnalyses.length,
+      extractedSentiments: sentiments,
+      extractedStrengths: strengths,
+      timeframes: validAnalyses.map(a => a.timeframe || 'unknown'),
+      rawStructures: validAnalyses.map(a => ({
+        hasNestedAnalysis: !!(a.analysis),
+        nestedSentiment: a.analysis?.sentiment,
+        flatSentiment: a.sentiment,
+        nestedStrength: a.analysis?.strength,
+        flatStrength: a.strength
+      }))
+    });
     
     const consensusSentiment = this.getMostFrequent(sentiments) || 'neutral'; // Default to neutral if no sentiment
     const avgStrength = strengths.length > 0 ? strengths.reduce((sum, s) => sum + s, 0) / strengths.length : 3.0; // Default to 3.0
@@ -2055,5 +2055,70 @@ export class FerrariTradingSystem extends EventEmitter {
       
       throw error;
     }
+  }
+
+  /**
+   * Graceful shutdown method
+   */
+  async shutdown() {
+    try {
+      console.log('🏎️ Shutting down Ferrari Trading System...');
+      
+      // Stop all intervals
+      if (this.state.intervals.signalEngine) {
+        clearInterval(this.state.intervals.signalEngine);
+      }
+      if (this.state.intervals.rateLimitManager) {
+        clearInterval(this.state.intervals.rateLimitManager);
+      }
+      if (this.state.intervals.performanceTracking) {
+        clearInterval(this.state.intervals.performanceTracking);
+      }
+      if (this.state.intervals.dataHealthMonitoring) {
+        clearInterval(this.state.intervals.dataHealthMonitoring);
+      }
+      if (this.state.intervals.websocketReconnection) {
+        clearInterval(this.state.intervals.websocketReconnection);
+      }
+
+      // Close WebSocket connections
+      if (this.state.feeds.alpaca && this.state.feeds.alpaca.readyState === 1) {
+        this.state.feeds.alpaca.close();
+      }
+      if (this.state.feeds.binance && this.state.feeds.binance.readyState === 1) {
+        this.state.feeds.binance.close();
+      }
+      if (this.state.feeds.finnhub && this.state.feeds.finnhub.readyState === 1) {
+        this.state.feeds.finnhub.close();
+      }
+
+      // Clear caches
+      this.state.priceCache.clear();
+      this.state.signalQueue.length = 0;
+      this.state.userLimits.clear();
+
+      console.log('✅ Ferrari Trading System shutdown completed');
+    } catch (error) {
+      console.error('❌ Error during Ferrari system shutdown:', error);
+    }
+  }
+
+  /**
+   * Get system statistics for monitoring
+   */
+  getSystemStats() {
+    return {
+      totalSymbols: this.getTotalSymbols(),
+      priceUpdates: this.state.metrics.priceUpdates,
+      signalsSent: this.state.metrics.signalsSent,
+      activeFeeds: Object.keys(this.state.feeds).filter(f => this.state.feeds[f] && this.state.feeds[f].readyState === 1).length,
+      uptime: Date.now() - this.state.startTime,
+      memoryUsage: process.memoryUsage(),
+      circuitBreakerStatus: {
+        finnhub: this.config.circuitBreaker.finnhub.isOpen,
+        alpaca: this.config.circuitBreaker.alpaca.isOpen,
+        binance: this.config.circuitBreaker.binance.isOpen
+      }
+    };
   }
 }

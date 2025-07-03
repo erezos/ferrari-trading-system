@@ -523,14 +523,18 @@ class InstitutionalAnalysisService {
     const finalScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
     const avgConfidence = validFactors > 0 ? totalConfidence / validFactors : 0;
 
+    // FIX: Ensure no NaN values are returned
+    const safeFinalScore = isNaN(finalScore) || !isFinite(finalScore) ? 0 : finalScore;
+    const safeAvgConfidence = isNaN(avgConfidence) || !isFinite(avgConfidence) ? 0 : avgConfidence;
+
     // Determine sentiment
     let sentiment = 'neutral';
-    if (finalScore > 0.5) sentiment = 'bullish';
-    else if (finalScore < -0.5) sentiment = 'bearish';
+    if (safeFinalScore > 0.5) sentiment = 'bullish';
+    else if (safeFinalScore < -0.5) sentiment = 'bearish';
 
     return {
-      score: Math.max(-2, Math.min(2, finalScore)),
-      confidence: Math.min(95, avgConfidence),
+      score: Math.max(-2, Math.min(2, safeFinalScore)),
+      confidence: Math.min(95, Math.max(0, safeAvgConfidence)),
       sentiment,
       validFactors
     };
