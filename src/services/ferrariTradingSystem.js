@@ -387,9 +387,9 @@ export class FerrariTradingSystem extends EventEmitter {
       symbolData.change = change || 0;
       symbolData.changePercent = changePercent || 0;
       
-      // Log every 50th price update to show system activity
+      // Log every 1000th price update to show system activity
       this.state.priceUpdateCounter = (this.state.priceUpdateCounter || 0) + 1;
-      if (this.state.priceUpdateCounter % 50 === 0) {
+      if (this.state.priceUpdateCounter % 1000 === 0) {
         console.log(`📊 Price updates processed: ${this.state.priceUpdateCounter} | Active symbols: ${this.state.priceCache.size}`);
       }
       
