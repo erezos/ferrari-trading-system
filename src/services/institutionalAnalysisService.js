@@ -24,6 +24,13 @@ class InstitutionalAnalysisService {
       fundamental: 0.15,   // Fundamental analysis
       flow: 0.10          // Order flow analysis
     };
+    
+    // Circuit breaker for API resilience
+    this.apiHealth = {
+      finnhub: { failures: 0, lastFailure: null, isDown: false, lastSuccess: Date.now() },
+      maxFailures: 3,
+      recoveryTime: 300000 // 5 minutes
+    };
   }
 
   /**
@@ -198,8 +205,18 @@ class InstitutionalAnalysisService {
       return result;
 
     } catch (error) {
-      console.error(`❌ Sentiment analysis error for ${symbol}:`, error);
-      return { score: 0, newsCount: 0, bullishCount: 0, bearishCount: 0, confidence: 0 };
+      this.recordApiFailure('finnhub', error);
+      console.error(`❌ Sentiment analysis error for ${symbol}:`, error.message);
+      // Return neutral sentiment when API fails
+      return { 
+        score: 0, 
+        newsCount: 0, 
+        bullishCount: 0, 
+        bearishCount: 0, 
+        confidence: 0,
+        fallback: true,
+        error: error.response?.status === 502 ? 'API temporarily unavailable (502)' : 'API error'
+      };
     }
   }
 
@@ -272,8 +289,18 @@ class InstitutionalAnalysisService {
       return result;
 
     } catch (error) {
-      console.error(`❌ Insider analysis error for ${symbol}:`, error);
-      return { score: 0, mspr: 0, buyVolume: 0, sellVolume: 0, transactionCount: 0, confidence: 0 };
+      this.recordApiFailure('finnhub', error);
+      console.error(`❌ Insider analysis error for ${symbol}:`, error.message);
+      return { 
+        score: 0, 
+        mspr: 0, 
+        buyVolume: 0, 
+        sellVolume: 0, 
+        transactionCount: 0, 
+        confidence: 0,
+        fallback: true,
+        error: error.response?.status === 502 ? 'API temporarily unavailable (502)' : 'API error'
+      };
     }
   }
 
@@ -412,8 +439,15 @@ class InstitutionalAnalysisService {
       };
 
     } catch (error) {
-      console.error(`❌ Fundamental analysis error for ${symbol}:`, error);
-      return { score: 0, confidence: 0, reason: 'error' };
+      this.recordApiFailure('finnhub', error);
+      console.error(`❌ Fundamental analysis error for ${symbol}:`, error.message);
+      return { 
+        score: 0, 
+        confidence: 0, 
+        reason: 'api_error',
+        fallback: true,
+        error: error.response?.status === 502 ? 'API temporarily unavailable (502)' : 'API error'
+      };
     }
   }
 
@@ -835,6 +869,51 @@ class InstitutionalAnalysisService {
     }
   }
 
+  /**
+   * API Health Management
+   */
+  recordApiFailure(service, error) {
+    const health = this.apiHealth[service];
+    if (!health) return;
+
+    health.failures++;
+    health.lastFailure = Date.now();
+    
+    if (health.failures >= this.apiHealth.maxFailures) {
+      health.isDown = true;
+      console.log(`🚨 ${service} API marked as DOWN after ${health.failures} failures. Error: ${error?.response?.status || error?.message}`);
+    } else {
+      console.warn(`⚠️ ${service} API failure ${health.failures}/${this.apiHealth.maxFailures}: ${error?.response?.status || error?.message}`);
+    }
+  }
+
+  recordApiSuccess(service) {
+    const health = this.apiHealth[service];
+    if (health && health.failures > 0) {
+      health.failures = 0;
+      health.lastSuccess = Date.now();
+      if (health.isDown) {
+        health.isDown = false;
+        console.log(`✅ ${service} API recovered and marked as UP`);
+      }
+    }
+  }
+
+  isApiHealthy(service) {
+    const health = this.apiHealth[service];
+    if (!health) return true;
+
+    // Auto-recovery after recovery time
+    if (health.isDown && health.lastFailure && 
+        (Date.now() - health.lastFailure) > this.apiHealth.recoveryTime) {
+      health.isDown = false;
+      health.failures = 0;
+      console.log(`🔄 ${service} API auto-recovery timeout reached, marking as UP`);
+    }
+
+    return !health.isDown;
+  }
+
   getEnhancedFallbackAnalysis(symbol, timeframe) {
     const symbolType = this.getSymbolType(symbol);
     let baseStrength = 3.5;
@@ -846,11 +925,13 @@ class InstitutionalAnalysisService {
     const finalStrength = Math.max(2.0, Math.min(5.0, baseStrength));
     const sentiment = finalStrength > 3.8 ? 'bullish' : 'bearish';
     
+    const isApiDown = !this.isApiHealthy('finnhub');
+    
     return {
       symbol,
       timeframe,
       compositeScore: finalStrength,
-      confidence: 60,
+      confidence: isApiDown ? 40 : 60, // Lower confidence when API is down
       sentiment,
       factors: {
         momentum: { score: 0, confidence: 30 },
@@ -860,9 +941,13 @@ class InstitutionalAnalysisService {
         fundamental: { score: 0, confidence: 0 },
         flow: { score: 0, confidence: 0 }
       },
-      reasoning: [`🔄 Fallback analysis for ${symbol}`, `${sentiment.toUpperCase()} signal with ${finalStrength.toFixed(1)} strength`],
+      reasoning: [
+        `🔄 ${isApiDown ? 'API-down' : 'Fallback'} analysis for ${symbol}`, 
+        `${sentiment.toUpperCase()} signal with ${finalStrength.toFixed(1)} strength`,
+        ...(isApiDown ? ['⚠️ External data sources temporarily unavailable'] : [])
+      ],
       timestamp: new Date().toISOString(),
-      analysisType: 'fallback'
+      analysisType: isApiDown ? 'api_down_fallback' : 'fallback'
     };
   }
 }

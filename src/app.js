@@ -114,16 +114,66 @@ app.get('/', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  const stats = ferrariInitialized ? ferrariTradingSystem.getSystemStats() : {};
   res.json({ 
-    status: 'OK', 
+    status: 'ok', 
     timestamp: new Date().toISOString(),
-    ferrari: {
-      active: ferrariInitialized,
-      system: 'Ferrari Trading System v1.0',
-      ...stats
-    }
+    system: 'Ferrari Trading System v1.0',
+    uptime: process.uptime()
   });
+});
+
+// Detailed health status with API monitoring
+app.get('/health/detailed', (req, res) => {
+  try {
+    const systemStatus = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      system: 'Ferrari Trading System v1.0',
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV || 'development',
+      
+      // Ferrari system status
+      ferrari: {
+        initialized: ferrariInitialized,
+        connectedFeeds: ferrariTradingSystem.state?.connectedFeeds || new Map(),
+        activeSymbols: ferrariTradingSystem.getTotalSymbols?.() || 0,
+        circuitBreakers: ferrariTradingSystem.config?.circuitBreaker || {}
+      },
+      
+      // External API health from circuit breakers
+      externalApis: {
+        finnhub: {
+          healthy: !ferrariTradingSystem.config?.circuitBreaker?.finnhub?.isOpen,
+          failures: ferrariTradingSystem.config?.circuitBreaker?.finnhub?.failures || 0,
+          lastFailure: ferrariTradingSystem.config?.circuitBreaker?.finnhub?.lastFailure
+        },
+        alpaca: {
+          healthy: !ferrariTradingSystem.config?.circuitBreaker?.alpaca?.isOpen,
+          failures: ferrariTradingSystem.config?.circuitBreaker?.alpaca?.failures || 0,
+          lastFailure: ferrariTradingSystem.config?.circuitBreaker?.alpaca?.lastFailure
+        },
+        binance: {
+          healthy: !ferrariTradingSystem.config?.circuitBreaker?.binance?.isOpen,
+          failures: ferrariTradingSystem.config?.circuitBreaker?.binance?.failures || 0,
+          lastFailure: ferrariTradingSystem.config?.circuitBreaker?.binance?.lastFailure
+        }
+      },
+      
+      // Memory and performance
+      performance: {
+        memoryUsage: process.memoryUsage(),
+        cpuUsage: process.cpuUsage()
+      }
+    };
+    
+    res.json(systemStatus);
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Graceful shutdown

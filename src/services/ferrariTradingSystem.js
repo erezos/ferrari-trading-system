@@ -29,30 +29,8 @@ export class FerrariTradingSystem extends EventEmitter {
     this.config = {
       // Symbol universe (200+ symbols)
       watchlist: {
-        stocks: [
-          // Mega caps
-          'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B',
-          // Tech leaders
-          'ADBE', 'CRM', 'NFLX', 'ORCL', 'AMD', 'INTC', 'QCOM', 'AVGO',
-          // Growth stocks
-          'SHOP', 'SQ', 'PYPL', 'ROKU', 'ZOOM', 'DOCU', 'SNOW', 'PLTR',
-          // Traditional
-          'JPM', 'BAC', 'WMT', 'JNJ', 'PG', 'KO', 'DIS', 'V', 'MA',
-          // ETFs
-          'SPY', 'QQQ', 'IWM', 'VTI', 'ARKK', 'XLK', 'XLF', 'XLE',
-          // Meme/High volatility
-          'GME', 'AMC', 'BB', 'WISH', 'CLOV', 'SPCE', 'RIVN', 'LCID'
-          // ... expand to 150+ stocks
-        ],
-        crypto: [
-          // OPTIMIZED: Top 10 most liquid crypto pairs only (reduce noise)
-          'BTC/USD', 'ETH/USD', 'BNB/USD', 'ADA/USD', 'SOL/USD', 
-          'XRP/USD', 'DOT/USD', 'DOGE/USD', 'AVAX/USD', 'LINK/USD'
-          // REMOVED: Secondary pairs that generate too much noise
-          // 'UNI/USD', 'ALGO/USD', 'ATOM/USD', 'FTT/USD', 'NEAR/USD', 
-          // 'MANA/USD', 'SAND/USD', 'MATIC/USD', 'CRO/USD', 'LRC/USD', 
-          // 'ENJ/USD', 'GALA/USD', 'CHZ/USD'
-        ]
+        stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'ADBE', 'CRM', 'SHOP', 'SQ', 'PYPL', 'ROKU', 'ZOOM', 'DOCU', 'TWLO', 'OKTA', 'SNOW', 'PLTR'],
+        crypto: ['BTC/USD', 'ETH/USD', 'ADA/USD', 'XRP/USD', 'DOT/USD', 'LINK/USD', 'LTC/USD', 'BCH/USD', 'XLM/USD', 'ALGO/USD']
       },
       
       // Quality filters
@@ -79,6 +57,15 @@ export class FerrariTradingSystem extends EventEmitter {
         marketClose: '16:00',        // 4:00 PM EST
         afterHoursEnd: '20:00',      // 8:00 PM EST
         cryptoAlwaysOn: true         // Crypto trades 24/7
+      },
+      
+      // NEW: Circuit breaker configuration
+      circuitBreaker: {
+        finnhub: { failures: 0, lastFailure: null, isOpen: false, timeout: 300000 }, // 5 min timeout
+        alpaca: { failures: 0, lastFailure: null, isOpen: false, timeout: 300000 },
+        binance: { failures: 0, lastFailure: null, isOpen: false, timeout: 180000 }, // 3 min timeout
+        maxFailures: 5,
+        resetTime: 600000 // 10 minutes
       }
     };
     
@@ -134,6 +121,9 @@ export class FerrariTradingSystem extends EventEmitter {
       
       // Start performance tracking
       this.startPerformanceTracking();
+      
+      // Start data health monitoring
+      this.startDataHealthMonitoring();
       
       console.log('✅ Ferrari Trading System ACTIVE');
       console.log('🎯 Delivering only the best 5 signals per day per user');
@@ -656,18 +646,21 @@ export class FerrariTradingSystem extends EventEmitter {
    * @returns {Promise<Array>} Array of {open, high, low, close, volume}
    */
   async fetchHistoricalOHLCV(symbol, type, limit = 20) {
-    try {
-      if (type === 'crypto') {
-        // Binance expects uppercase, USDT, no slash
-        const originalSymbol = symbol;
-        let binanceSymbol = symbol.replace('/', '').replace('USD', 'USDT').toUpperCase();
-        const url = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1h&limit=${limit}`;
-        console.log(`[Binance OHLCV] Requesting:`, { originalSymbol, binanceSymbol, url });
-        try {
-          const resp = await axios.get(url);
+    if (type === 'crypto') {
+      // Crypto: Use Binance with circuit breaker
+      return await this.callApiWithCircuitBreaker(
+        'binance',
+        async () => {
+          const originalSymbol = symbol;
+          let binanceSymbol = symbol.replace('/', '').replace('USD', 'USDT').toUpperCase();
+          const url = `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1h&limit=${limit}`;
+          console.log(`[Binance OHLCV] Requesting:`, { originalSymbol, binanceSymbol });
+          
+          const resp = await axios.get(url, { timeout: 10000 });
           if (resp.status !== 200) {
-            console.warn(`[Binance OHLCV] Non-200 response`, { status: resp.status, data: resp.data });
+            throw new Error(`Binance API returned ${resp.status}`);
           }
+          
           return resp.data.map(candle => ({
             open: parseFloat(candle[1]),
             high: parseFloat(candle[2]),
@@ -675,54 +668,233 @@ export class FerrariTradingSystem extends EventEmitter {
             close: parseFloat(candle[4]),
             volume: parseFloat(candle[5])
           }));
-        } catch (err) {
-          if (err.response) {
-            console.error(`[Binance OHLCV] Error response for`, { originalSymbol, binanceSymbol, url, status: err.response.status, data: err.response.data });
-          } else {
-            console.error(`[Binance OHLCV] Request error for`, { originalSymbol, binanceSymbol, url, message: err.message });
-          }
-          throw err;
-        }
-      } else if (type === 'stock') {
-        // Try Alpaca first
-        if (process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY) {
-          const alpacaUrl = `https://data.alpaca.markets/v2/stocks/${symbol}/bars?timeframe=1Hour&limit=${limit}`;
-          const resp = await axios.get(alpacaUrl, {
-            headers: {
-              'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
-              'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY
+        },
+        null // NO synthetic fallback - return null if Binance fails
+      );
+    } else {
+      // Stocks: Try Alpaca first, then Finnhub, with circuit breakers
+      
+      // Try Alpaca first
+      if (process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY) {
+        try {
+          return await this.callApiWithCircuitBreaker(
+            'alpaca',
+            async () => {
+              const alpacaUrl = `https://data.alpaca.markets/v2/stocks/${symbol}/bars?timeframe=1Hour&limit=${limit}`;
+              const resp = await axios.get(alpacaUrl, {
+                headers: {
+                  'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
+                  'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY
+                },
+                timeout: 10000
+              });
+              
+              if (resp.data && resp.data.bars && resp.data.bars.length > 0) {
+                return resp.data.bars.map(bar => ({
+                  open: bar.o,
+                  high: bar.h,
+                  low: bar.l,
+                  close: bar.c,
+                  volume: bar.v
+                }));
+              }
+              throw new Error('No data from Alpaca');
             }
-          });
-          if (resp.data && resp.data.bars && resp.data.bars.length > 0) {
-            return resp.data.bars.map(bar => ({
-              open: bar.o,
-              high: bar.h,
-              low: bar.l,
-              close: bar.c,
-              volume: bar.v
-            }));
-          }
-        }
-        // Fallback: Finnhub
-        if (process.env.FINNHUB_API_KEY) {
-          const finnhubUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=60&count=${limit}&token=${process.env.FINNHUB_API_KEY}`;
-          const resp = await axios.get(finnhubUrl);
-          if (resp.data && resp.data.c && resp.data.c.length > 0) {
-            // Finnhub returns arrays for o/h/l/c/v
-            return resp.data.c.map((close, i) => ({
-              open: resp.data.o[i],
-              high: resp.data.h[i],
-              low: resp.data.l[i],
-              close: close,
-              volume: resp.data.v[i]
-            }));
-          }
+          );
+        } catch (alpacaError) {
+          console.warn(`⚠️ Alpaca failed for ${symbol}, trying Finnhub:`, alpacaError.message);
         }
       }
-    } catch (err) {
-      console.warn(`⚠️ fetchHistoricalOHLCV failed for ${symbol} (${type}):`, err.message);
+      
+      // Fallback: Finnhub with circuit breaker
+      if (process.env.FINNHUB_API_KEY) {
+        return await this.callApiWithCircuitBreaker(
+          'finnhub',
+          async () => {
+            const finnhubUrl = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=60&count=${limit}&token=${process.env.FINNHUB_API_KEY}`;
+            const resp = await axios.get(finnhubUrl, { timeout: 10000 });
+            
+            if (resp.data && resp.data.c && resp.data.c.length > 0) {
+              return resp.data.c.map((close, i) => ({
+                open: resp.data.o[i],
+                high: resp.data.h[i],
+                low: resp.data.l[i],
+                close: close,
+                volume: resp.data.v[i]
+              }));
+            }
+            throw new Error('No data from Finnhub');
+          },
+          null // NO synthetic fallback - return null if Finnhub fails
+        );
+      }
     }
+    
+    // SAFE: Return empty array when all APIs fail - NO TRADING DATA AVAILABLE
+    console.error(`❌ All API sources failed for ${symbol} - NO TRADING DATA AVAILABLE`);
     return [];
+  }
+
+  /**
+   * Enhanced real-time data pipeline health monitoring
+   */
+  async ensureDataPipelineHealth() {
+    console.log('🔄 Checking data pipeline health...');
+    
+    const healthReport = {
+      timestamp: new Date().toISOString(),
+      dataSources: {
+        alpaca: { status: 'unknown', lastTest: Date.now() },
+        finnhub: { status: 'unknown', lastTest: Date.now() },
+        binance: { status: 'unknown', lastTest: Date.now() }
+      },
+      dataAvailability: {
+        recentData: 0,
+        totalSymbols: this.getTotalSymbols(),
+        dataHealthPercent: 0
+      },
+      webSocketConnections: {
+        alpaca: this.alpacaSocket?.readyState === 1 ? 'connected' : 'disconnected',
+        finnhub: this.finnhubSocket?.readyState === 1 ? 'connected' : 'disconnected', 
+        binance: this.binanceSocket?.readyState === 1 ? 'connected' : 'disconnected'
+      }
+    };
+
+    // Test each data source
+    await this.testDataSources(healthReport);
+    
+    // Check data freshness
+    const symbolsWithRecentData = this.countSymbolsWithRecentData();
+    healthReport.dataAvailability.recentData = symbolsWithRecentData;
+    healthReport.dataAvailability.dataHealthPercent = 
+      (symbolsWithRecentData / healthReport.dataAvailability.totalSymbols) * 100;
+    
+    console.log('📊 Data pipeline health report:', {
+      dataHealth: `${healthReport.dataAvailability.dataHealthPercent.toFixed(1)}%`,
+      symbolsWithData: `${symbolsWithRecentData}/${healthReport.dataAvailability.totalSymbols}`,
+      apis: healthReport.dataSources,
+      websockets: healthReport.webSocketConnections
+    });
+    
+    // If less than 70% of symbols have recent data, trigger recovery
+    if (healthReport.dataAvailability.dataHealthPercent < 70) {
+      console.log('🚨 Data health below 70%, triggering recovery procedures...');
+      await this.triggerDataRecovery();
+    }
+    
+    return healthReport;
+  }
+
+  async testDataSources(healthReport) {
+    // Test Alpaca (stocks)
+    if (process.env.ALPACA_API_KEY) {
+      try {
+        const alpacaTest = await axios.get('https://data.alpaca.markets/v2/stocks/AAPL/bars?timeframe=1Hour&limit=1', {
+          headers: {
+            'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
+            'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY
+          },
+          timeout: 8000
+        });
+        
+        if (alpacaTest.data && alpacaTest.data.bars) {
+          healthReport.dataSources.alpaca.status = 'healthy';
+          this.recordApiSuccess('alpaca');
+        }
+      } catch (error) {
+        healthReport.dataSources.alpaca.status = 'failed';
+        healthReport.dataSources.alpaca.error = error.response?.status || error.message;
+        this.recordApiFailure('alpaca', error);
+      }
+    }
+
+    // Test Finnhub (stocks + news)
+    if (process.env.FINNHUB_API_KEY) {
+      try {
+        const finnhubTest = await axios.get(`https://finnhub.io/api/v1/quote?symbol=AAPL&token=${process.env.FINNHUB_API_KEY}`, {
+          timeout: 8000
+        });
+        
+        if (finnhubTest.data && typeof finnhubTest.data.c === 'number') {
+          healthReport.dataSources.finnhub.status = 'healthy';
+          this.recordApiSuccess('finnhub');
+        }
+      } catch (error) {
+        healthReport.dataSources.finnhub.status = 'failed';
+        healthReport.dataSources.finnhub.error = error.response?.status || error.message;
+        this.recordApiFailure('finnhub', error);
+      }
+    }
+
+    // Test Binance (crypto)
+    try {
+      const binanceTest = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', {
+        timeout: 8000
+      });
+      
+      if (binanceTest.data && binanceTest.data.price) {
+        healthReport.dataSources.binance.status = 'healthy';
+        this.recordApiSuccess('binance');
+      }
+    } catch (error) {
+      healthReport.dataSources.binance.status = 'failed';
+      healthReport.dataSources.binance.error = error.response?.status || error.message;
+      this.recordApiFailure('binance', error);
+    }
+  }
+
+  countSymbolsWithRecentData() {
+    let count = 0;
+    const fiveMinutesAgo = Date.now() - 300000; // 5 minutes
+    
+    for (const [symbol, data] of this.state.priceCache.entries()) {
+      if (data.prices && data.prices.length > 0) {
+        const latestPrice = data.prices[data.prices.length - 1];
+        if (latestPrice.timestamp > fiveMinutesAgo) {
+          count++;
+        }
+      }
+    }
+    
+    return count;
+  }
+
+  async triggerDataRecovery() {
+    console.log('🔄 Initiating data recovery procedures...');
+    
+    // 1. Reset circuit breakers for fresh attempts
+    this.resetCircuitBreakers();
+    
+    // 2. Reconnect WebSocket feeds
+    try {
+      console.log('🔌 Reconnecting data feeds...');
+      await this.initializeDataFeeds();
+    } catch (error) {
+      console.error('❌ Data feed reconnection failed:', error.message);
+    }
+    
+    // 3. Clean stale data from cache
+    this.cleanupStaleData();
+    
+    console.log('✅ Data recovery procedures completed');
+  }
+
+  resetCircuitBreakers() {
+    const services = ['finnhub', 'alpaca', 'binance'];
+    let resetCount = 0;
+    
+    services.forEach(service => {
+      if (this.config.circuitBreaker[service]?.isOpen) {
+        this.config.circuitBreaker[service].isOpen = false;
+        this.config.circuitBreaker[service].failures = 0;
+        resetCount++;
+        console.log(`🔄 Reset circuit breaker for ${service}`);
+      }
+    });
+    
+    if (resetCount > 0) {
+      console.log(`✅ Reset ${resetCount} circuit breakers for recovery`);
+    }
   }
 
   /**
@@ -1263,6 +1435,62 @@ export class FerrariTradingSystem extends EventEmitter {
     this.state.intervals.add(performanceInterval);
   }
 
+  startDataHealthMonitoring() {
+    console.log('🩺 Starting data health monitoring...');
+    
+    // Monitor data pipeline health every 2 minutes
+    const healthCheckInterval = setInterval(async () => {
+      if (!this.state.isShuttingDown) {
+        try {
+          await this.ensureDataPipelineHealth();
+        } catch (error) {
+          console.error('❌ Data health monitoring error:', error);
+        }
+      }
+    }, 120000); // 2 minutes
+
+    // More frequent WebSocket connection checks (every 30 seconds)
+    const websocketCheckInterval = setInterval(() => {
+      if (!this.state.isShuttingDown) {
+        this.checkAndReconnectWebSockets();
+      }
+    }, 30000); // 30 seconds
+    
+    this.state.intervals.add(healthCheckInterval);
+    this.state.intervals.add(websocketCheckInterval);
+    
+    console.log('✅ Data health monitoring active');
+  }
+
+  checkAndReconnectWebSockets() {
+    let reconnectionNeeded = false;
+
+    // Check Alpaca WebSocket
+    if (!this.alpacaSocket || this.alpacaSocket.readyState !== 1) {
+      console.log('🔌 Alpaca WebSocket needs reconnection');
+      this.connectAlpacaFeed(this.config.watchlist.stocks);
+      reconnectionNeeded = true;
+    }
+
+    // Check Finnhub WebSocket  
+    if (!this.finnhubSocket || this.finnhubSocket.readyState !== 1) {
+      console.log('🔌 Finnhub WebSocket needs reconnection');
+      this.connectFinnhubFeed(this.config.watchlist.stocks);
+      reconnectionNeeded = true;
+    }
+
+    // Check Binance WebSocket
+    if (!this.binanceSocket || this.binanceSocket.readyState !== 1) {
+      console.log('🔌 Binance WebSocket needs reconnection');
+      this.connectBinanceFeed(this.config.watchlist.crypto);
+      reconnectionNeeded = true;
+    }
+
+    if (reconnectionNeeded) {
+      console.log('🔄 WebSocket reconnection initiated');
+    }
+  }
+
   getTotalSymbols() {
     return this.config.watchlist.stocks.length + this.config.watchlist.crypto.length;
   }
@@ -1707,6 +1935,76 @@ export class FerrariTradingSystem extends EventEmitter {
     } catch (error) {
       console.error(`❌ Error checking user signal limits for ${userId}:`, error);
       return false; // Default to not sending on error
+    }
+  }
+
+  /**
+   * Circuit breaker logic for API resilience
+   */
+  isCircuitBreakerOpen(service) {
+    const breaker = this.config.circuitBreaker[service];
+    if (!breaker) return false;
+    
+    // Reset if enough time has passed
+    if (breaker.isOpen && breaker.lastFailure && 
+        (Date.now() - breaker.lastFailure) > this.config.circuitBreaker.resetTime) {
+      breaker.isOpen = false;
+      breaker.failures = 0;
+      console.log(`🔄 Circuit breaker RESET for ${service}`);
+    }
+    
+    return breaker.isOpen;
+  }
+
+  recordApiFailure(service, error) {
+    const breaker = this.config.circuitBreaker[service];
+    if (!breaker) return;
+    
+    breaker.failures++;
+    breaker.lastFailure = Date.now();
+    
+    if (breaker.failures >= this.config.circuitBreaker.maxFailures) {
+      breaker.isOpen = true;
+      console.log(`🚨 Circuit breaker OPENED for ${service} after ${breaker.failures} failures. Error: ${error?.message || error}`);
+    } else {
+      console.warn(`⚠️ API failure ${breaker.failures}/${this.config.circuitBreaker.maxFailures} for ${service}: ${error?.message || error}`);
+    }
+  }
+
+  recordApiSuccess(service) {
+    const breaker = this.config.circuitBreaker[service];
+    if (breaker && breaker.failures > 0) {
+      breaker.failures = 0; // Reset on success
+    }
+  }
+
+  /**
+   * Enhanced error handling with circuit breaker pattern
+   */
+  async callApiWithCircuitBreaker(service, apiCall, fallbackFunction = null) {
+    if (this.isCircuitBreakerOpen(service)) {
+      console.log(`⚡ Circuit breaker OPEN for ${service}, using fallback`);
+      return fallbackFunction ? await fallbackFunction() : null;
+    }
+
+    try {
+      const result = await apiCall();
+      this.recordApiSuccess(service);
+      return result;
+    } catch (error) {
+      this.recordApiFailure(service, error);
+      
+      // Use fallback if available
+      if (fallbackFunction) {
+        try {
+          console.log(`🔄 Using fallback for ${service} due to error: ${error.message}`);
+          return await fallbackFunction();
+        } catch (fallbackError) {
+          console.error(`❌ Fallback also failed for ${service}:`, fallbackError.message);
+        }
+      }
+      
+      throw error;
     }
   }
 }
