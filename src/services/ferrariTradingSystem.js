@@ -320,6 +320,8 @@ export class FerrariTradingSystem extends EventEmitter {
 
   processFinnhubMessage(msg) {
     console.log(`🔍 Processing Finnhub message:`, msg);
+    
+    // FIX: Handle different Finnhub message formats
     if (msg.type === 'trade' && msg.data) {
       console.log(`📈 Finnhub trades: ${msg.data.length} trades received`);
       msg.data.forEach(trade => {
@@ -334,8 +336,18 @@ export class FerrariTradingSystem extends EventEmitter {
       });
     } else if (msg.type === 'ping') {
       console.log('💓 Finnhub ping received');
+    } else if (msg.s && msg.p && msg.t) {
+      // FIX: Direct trade message without wrapper (common format)
+      console.log(`📈 Finnhub direct trade: ${msg.s} @ $${msg.p} (volume: ${msg.v || 'N/A'})`);
+      this.updatePrice({
+        symbol: msg.s,
+        price: msg.p,
+        volume: msg.v || 1000,
+        timestamp: msg.t,
+        source: 'finnhub'
+      });
     } else {
-      console.log(`ℹ️ Finnhub message type: ${msg.type}`);
+      console.log(`ℹ️ Finnhub message type: ${msg.type || 'direct_trade'} | Keys: ${Object.keys(msg).join(', ')}`);
     }
   }
 
@@ -562,14 +574,36 @@ export class FerrariTradingSystem extends EventEmitter {
     // Debug logging to understand what we're working with
     console.log(`📊 ${symbol} analysis summary:`, {
       totalAnalyses: validAnalyses.length,
-      sentiments: validAnalyses.map(a => a.sentiment || 'undefined'),
-      strengths: validAnalyses.map(a => a.strength || 'undefined'),
-      timeframes: validAnalyses.map(a => a.timeframe || 'unknown')
+      extractedSentiments: sentiments,
+      extractedStrengths: strengths,
+      timeframes: validAnalyses.map(a => a.timeframe || 'unknown'),
+      rawStructures: validAnalyses.map(a => ({
+        hasNestedAnalysis: !!(a.analysis),
+        nestedSentiment: a.analysis?.sentiment,
+        flatSentiment: a.sentiment,
+        nestedStrength: a.analysis?.strength,
+        flatStrength: a.strength
+      }))
     });
     
     // Enhanced consensus building with institutional insights
-    const sentiments = validAnalyses.map(a => a.sentiment).filter(s => s); // Filter out undefined sentiments
-    const strengths = validAnalyses.map(a => a.strength).filter(s => typeof s === 'number'); // Filter out undefined strengths
+    // FIX: Handle both flat and nested analysis structures
+    const sentiments = validAnalyses.map(a => {
+      // Try nested structure first (TechnicalAnalysisService format)
+      if (a.analysis && a.analysis.sentiment) return a.analysis.sentiment;
+      // Then flat structure (direct format)
+      if (a.sentiment) return a.sentiment;
+      return null;
+    }).filter(s => s); // Filter out undefined sentiments
+    
+    const strengths = validAnalyses.map(a => {
+      // Try nested structure first (TechnicalAnalysisService format)
+      if (a.analysis && typeof a.analysis.strength === 'number') return a.analysis.strength;
+      // Then flat structure (direct format)
+      if (typeof a.strength === 'number') return a.strength;
+      return null;
+    }).filter(s => typeof s === 'number'); // Filter out undefined strengths
+    
     const consensusSentiment = this.getMostFrequent(sentiments) || 'neutral'; // Default to neutral if no sentiment
     const avgStrength = strengths.length > 0 ? strengths.reduce((sum, s) => sum + s, 0) / strengths.length : 3.0; // Default to 3.0
     
@@ -1073,31 +1107,46 @@ export class FerrariTradingSystem extends EventEmitter {
     const gates = this.config.qualityGates;
     
     // Minimum strength
-    if (analysis.finalStrength < gates.minimumStrength) {
+    if (!analysis.finalStrength || analysis.finalStrength < gates.minimumStrength) {
+      console.log(`❌ Quality gates failed: ${analysis.symbol} | Strength: ${analysis.finalStrength} < ${gates.minimumStrength}`);
       return false;
     }
     
-    // Ensure levels exist
+    // Ensure levels exist and are valid numbers
     if (!analysis.levels || 
-        analysis.levels.entry === undefined || 
-        analysis.levels.stopLoss === undefined || 
-        analysis.levels.takeProfit1 === undefined) {
+        typeof analysis.levels.entry !== 'number' || 
+        typeof analysis.levels.stopLoss !== 'number' || 
+        typeof analysis.levels.takeProfit1 !== 'number' ||
+        analysis.levels.entry <= 0 ||
+        analysis.levels.stopLoss <= 0 ||
+        analysis.levels.takeProfit1 <= 0) {
+      console.log(`❌ Quality gates failed: ${analysis.symbol} | Invalid levels:`, analysis.levels);
       return false;
     }
     
-    // Risk/reward ratio calculation
+    // Risk/reward ratio calculation with validation
     const risk = Math.abs(analysis.levels.entry - analysis.levels.stopLoss);
     const reward = Math.abs(analysis.levels.takeProfit1 - analysis.levels.entry);
-    const riskReward = risk > 0 ? reward / risk : 0;
+    
+    // Ensure risk and reward are valid
+    if (risk <= 0 || reward <= 0) {
+      console.log(`❌ Quality gates failed: ${analysis.symbol} | Invalid risk/reward calculation | Risk: ${risk}, Reward: ${reward}`);
+      analysis.riskRewardRatio = 0;
+      return false;
+    }
+    
+    const riskReward = reward / risk;
     
     // Set riskRewardRatio on analysis for use in tip creation
-    analysis.riskRewardRatio = riskReward;
+    analysis.riskRewardRatio = Math.round(riskReward * 100) / 100; // Round to 2 decimal places
     
     // Minimum risk/reward ratio
     if (riskReward < gates.minimumRiskReward) {
+      console.log(`❌ Quality gates failed: ${analysis.symbol} | Strength: ${analysis.finalStrength} | RR: ${riskReward.toFixed(2)} < ${gates.minimumRiskReward}`);
       return false;
     }
     
+    console.log(`✅ Quality gates passed: ${analysis.symbol} | Strength: ${analysis.finalStrength} | RR: ${riskReward.toFixed(2)}`);
     return true;
   }
 
