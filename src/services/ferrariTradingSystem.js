@@ -460,12 +460,24 @@ export class FerrariTradingSystem extends EventEmitter {
       if (analysis) {
         console.log(`📊 ANALYSIS COMPLETE: ${symbol} | Strength: ${analysis.strength}/5.0 | Sentiment: ${analysis.sentiment.toUpperCase()}`);
         
+        // PRE-CALCULATE risk/reward ratio for logging (before quality gates)
+        if (analysis.levels && 
+            typeof analysis.levels.entry === 'number' && 
+            typeof analysis.levels.stopLoss === 'number' && 
+            typeof analysis.levels.takeProfit1 === 'number') {
+          const risk = Math.abs(analysis.levels.entry - analysis.levels.stopLoss);
+          const reward = Math.abs(analysis.levels.takeProfit1 - analysis.levels.entry);
+          analysis.riskRewardRatio = (risk > 0 && reward > 0) ? Math.round((reward / risk) * 100) / 100 : 0;
+        } else {
+          analysis.riskRewardRatio = 0; // Default if levels are invalid
+        }
+        
         // Check if it passes quality gates
         if (this.passesQualityGates(analysis)) {
           console.log(`✅ QUALITY GATES PASSED: ${symbol} | Generating signal...`);
           await this.generateSignal(analysis);
         } else {
-          console.log(`❌ Quality gates failed: ${symbol} | Strength: ${analysis.finalStrength} | RR: ${analysis.riskRewardRatio || 'undefined'}`);
+          console.log(`❌ Quality gates failed: ${symbol} | Strength: ${analysis.finalStrength} | RR: ${analysis.riskRewardRatio}`);
         }
       }
       
@@ -2064,38 +2076,44 @@ export class FerrariTradingSystem extends EventEmitter {
     try {
       console.log('🏎️ Shutting down Ferrari Trading System...');
       
-      // Stop all intervals
-      if (this.state.intervals.signalEngine) {
+      // Stop all intervals (with null checks)
+      if (this.state?.intervals?.signalEngine) {
         clearInterval(this.state.intervals.signalEngine);
       }
-      if (this.state.intervals.rateLimitManager) {
+      if (this.state?.intervals?.rateLimitManager) {
         clearInterval(this.state.intervals.rateLimitManager);
       }
-      if (this.state.intervals.performanceTracking) {
+      if (this.state?.intervals?.performanceTracking) {
         clearInterval(this.state.intervals.performanceTracking);
       }
-      if (this.state.intervals.dataHealthMonitoring) {
+      if (this.state?.intervals?.dataHealthMonitoring) {
         clearInterval(this.state.intervals.dataHealthMonitoring);
       }
-      if (this.state.intervals.websocketReconnection) {
+      if (this.state?.intervals?.websocketReconnection) {
         clearInterval(this.state.intervals.websocketReconnection);
       }
 
-      // Close WebSocket connections
-      if (this.state.feeds.alpaca && this.state.feeds.alpaca.readyState === 1) {
+      // Close WebSocket connections (with null checks)
+      if (this.state?.feeds?.alpaca && this.state.feeds.alpaca.readyState === 1) {
         this.state.feeds.alpaca.close();
       }
-      if (this.state.feeds.binance && this.state.feeds.binance.readyState === 1) {
+      if (this.state?.feeds?.binance && this.state.feeds.binance.readyState === 1) {
         this.state.feeds.binance.close();
       }
-      if (this.state.feeds.finnhub && this.state.feeds.finnhub.readyState === 1) {
+      if (this.state?.feeds?.finnhub && this.state.feeds.finnhub.readyState === 1) {
         this.state.feeds.finnhub.close();
       }
 
-      // Clear caches
-      this.state.priceCache.clear();
-      this.state.signalQueue.length = 0;
-      this.state.userLimits.clear();
+      // Clear caches (with null checks)
+      if (this.state?.priceCache?.clear) {
+        this.state.priceCache.clear();
+      }
+      if (this.state?.signalQueue) {
+        this.state.signalQueue.length = 0;
+      }
+      if (this.state?.userLimits?.clear) {
+        this.state.userLimits.clear();
+      }
 
       console.log('✅ Ferrari Trading System shutdown completed');
     } catch (error) {
