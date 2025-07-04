@@ -374,7 +374,17 @@ class InstitutionalAnalysisService {
     try {
       // Skip crypto symbols for fundamental analysis
       if (symbol.includes('/')) {
-        return { score: 0, confidence: 0, reason: 'crypto_skip' };
+        return { 
+          score: 0, 
+          confidence: 0, 
+          reason: 'crypto_skip',
+          metrics: {
+            pe: null,
+            roe: null,
+            debtToEquity: null,
+            revenueGrowth: null
+          }
+        };
       }
 
       // Get basic financial metrics
@@ -388,40 +398,52 @@ class InstitutionalAnalysisService {
       });
 
       if (!metricsResponse.data || !metricsResponse.data.metric) {
-        return { score: 0, confidence: 0, reason: 'no_data' };
+        return { 
+          score: 0, 
+          confidence: 0, 
+          reason: 'no_data',
+          metrics: {
+            pe: null,
+            roe: null,
+            debtToEquity: null,
+            revenueGrowth: null
+          }
+        };
       }
 
       const metrics = metricsResponse.data.metric;
       let fundamentalScore = 0;
       let factorCount = 0;
 
+      // ✅ FIXED: Provide default values instead of undefined
+      const pe = metrics.peBasicExclExtraTTM || null;
+      const roe = metrics.roeTTM || null;
+      const debtToEquity = metrics.totalDebt2TotalEquityQuarterly || null;
+      const revenueGrowth = metrics.revenueGrowthTTMYoy || null;
+
       // PE Ratio analysis
-      if (metrics.peBasicExclExtraTTM) {
-        const pe = metrics.peBasicExclExtraTTM;
-        if (pe > 0 && pe < 15) fundamentalScore += 0.3; // Undervalued
+      if (pe !== null && pe > 0) {
+        if (pe < 15) fundamentalScore += 0.3; // Undervalued
         else if (pe > 30) fundamentalScore -= 0.3; // Overvalued
         factorCount++;
       }
 
       // ROE analysis
-      if (metrics.roeTTM) {
-        const roe = metrics.roeTTM;
+      if (roe !== null) {
         if (roe > 15) fundamentalScore += 0.2; // Strong ROE
         else if (roe < 5) fundamentalScore -= 0.2; // Weak ROE
         factorCount++;
       }
 
-      // Debt to Equity
-      if (metrics.totalDebt2TotalEquityQuarterly) {
-        const debtToEquity = metrics.totalDebt2TotalEquityQuarterly;
+      // Debt to Equity - ✅ FIXED: Handle undefined values properly
+      if (debtToEquity !== null) {
         if (debtToEquity < 0.3) fundamentalScore += 0.2; // Low debt
         else if (debtToEquity > 1.0) fundamentalScore -= 0.2; // High debt
         factorCount++;
       }
 
       // Revenue growth
-      if (metrics.revenueGrowthTTMYoy) {
-        const revenueGrowth = metrics.revenueGrowthTTMYoy;
+      if (revenueGrowth !== null) {
         if (revenueGrowth > 10) fundamentalScore += 0.3; // Strong growth
         else if (revenueGrowth < -5) fundamentalScore -= 0.3; // Declining
         factorCount++;
@@ -430,10 +452,10 @@ class InstitutionalAnalysisService {
       return {
         score: Math.max(-2, Math.min(2, fundamentalScore)),
         metrics: {
-          pe: metrics.peBasicExclExtraTTM,
-          roe: metrics.roeTTM,
-          debtToEquity: metrics.totalDebt2TotalEquityQuarterly,
-          revenueGrowth: metrics.revenueGrowthTTMYoy
+          pe: pe,
+          roe: roe,
+          debtToEquity: debtToEquity, // ✅ FIXED: Will be null instead of undefined
+          revenueGrowth: revenueGrowth
         },
         confidence: Math.min(95, factorCount * 20)
       };
@@ -446,7 +468,13 @@ class InstitutionalAnalysisService {
         confidence: 0, 
         reason: 'api_error',
         fallback: true,
-        error: error.response?.status === 502 ? 'API temporarily unavailable (502)' : 'API error'
+        error: error.response?.status === 502 ? 'API temporarily unavailable (502)' : 'API error',
+        metrics: {
+          pe: null,
+          roe: null,
+          debtToEquity: null, // ✅ FIXED: Explicit null instead of undefined
+          revenueGrowth: null
+        }
       };
     }
   }

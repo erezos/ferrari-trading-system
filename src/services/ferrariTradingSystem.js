@@ -1578,6 +1578,35 @@ export class FerrariTradingSystem extends EventEmitter {
     return `ferrari_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
+  /**
+   * ✅ NEW FEATURE: Sanitize data for Firebase by removing undefined values
+   * Firebase doesn't allow undefined values, so we need to clean the data structure
+   */
+  sanitizeDataForFirebase(obj) {
+    if (obj === null || obj === undefined) {
+      return null;
+    }
+    
+    if (typeof obj !== 'object') {
+      return obj;
+    }
+    
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.sanitizeDataForFirebase(item)).filter(item => item !== undefined);
+    }
+    
+    const sanitized = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const cleanedValue = this.sanitizeDataForFirebase(value);
+      // Only include the field if it's not undefined
+      if (cleanedValue !== undefined) {
+        sanitized[key] = cleanedValue;
+      }
+    }
+    
+    return sanitized;
+  }
+
   async saveTipToFirebase(tip) {
     if (!this.firebaseReady || !this.db) {
       console.log('💾 Test mode: Would save tip to Firebase');
@@ -1588,9 +1617,15 @@ export class FerrariTradingSystem extends EventEmitter {
       const { timeframe } = tip;
       const timestamp = admin.firestore.FieldValue.serverTimestamp();
       
+      // ✅ CRITICAL FIX: Sanitize data to remove undefined values before saving
+      const sanitizedTip = this.sanitizeDataForFirebase(tip);
+      
+      console.log(`💾 Saving Ferrari tip for ${tip.symbol} (${timeframe})...`);
+      console.log(`🧹 Data sanitization: ${Object.keys(tip).length} → ${Object.keys(sanitizedTip).length} fields`);
+      
       // ✅ SIMPLIFIED: Only save to latest_tips collection (what Flutter app reads)
       await this.db.collection('latest_tips').doc(timeframe).set({
-        ...tip,
+        ...sanitizedTip,
         createdAt: timestamp,
         updatedAt: timestamp,
         source: 'ferrari_trading_system',
@@ -1600,11 +1635,18 @@ export class FerrariTradingSystem extends EventEmitter {
       // ✅ Update app statistics like Firebase Functions
       await this.updateAppStats();
       
-      console.log(`💾 Ferrari tip saved to latest_tips: ${tip.symbol} (${timeframe})`);
+      console.log(`💾 ✅ Ferrari tip saved to latest_tips: ${tip.symbol} (${timeframe})`);
       
       return { success: true };
     } catch (error) {
       console.error('❌ Error saving tip to Firebase:', error);
+      
+      // Enhanced error logging for debugging
+      if (error.message && error.message.includes('undefined')) {
+        console.error('🔍 Undefined value detected in tip data:');
+        console.error('📊 Original tip structure:', JSON.stringify(tip, null, 2));
+      }
+      
       return { success: false, error: error.message };
     }
   }
