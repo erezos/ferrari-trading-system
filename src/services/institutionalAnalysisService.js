@@ -575,53 +575,44 @@ class InstitutionalAnalysisService {
     try {
       const reasoning = [];
       const { momentum, sentiment, insider, technical, fundamental, flow, composite } = analysis;
-
       // Ensure composite exists
       if (!composite) {
         console.warn(`⚠️ Missing composite analysis for ${symbol}`);
         return [`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - Limited data available`];
       }
-
-      reasoning.push(`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - ${composite.sentiment.toUpperCase()} (${composite.score.toFixed(2)})`);
-
+      reasoning.push(`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - ${composite.sentiment ? composite.sentiment.toUpperCase() : 'N/A'} (${safeNumber(composite.score)})`);
       // Momentum analysis
-      if (momentum && momentum.confidence && momentum.confidence > 50 && momentum.score !== undefined && momentum.consistency !== undefined) {
-        reasoning.push(`📈 MOMENTUM: ${momentum.score.toFixed(2)} - Multi-timeframe consistency ${momentum.consistency.toFixed(1)}%`);
+      if (momentum && momentum.confidence && momentum.confidence > 50 && typeof momentum.score === 'number' && typeof momentum.consistency === 'number') {
+        reasoning.push(`📈 MOMENTUM: ${safeNumber(momentum.score)} - Multi-timeframe consistency ${safeNumber(momentum.consistency, 1)}%`);
       }
-
-      // Sentiment analysis  
+      // Sentiment analysis
       if (sentiment && sentiment.newsCount && sentiment.newsCount > 0) {
-        reasoning.push(`📰 SENTIMENT: ${sentiment.score.toFixed(2)} - ${sentiment.newsCount} articles (${sentiment.bullishCount}B/${sentiment.bearishCount}B)`);
+        reasoning.push(`📰 SENTIMENT: ${safeNumber(sentiment.score)} - ${safeNumber(sentiment.newsCount, 0)} articles (${safeNumber(sentiment.bullishCount, 0)}B/${safeNumber(sentiment.bearishCount, 0)}B)`);
       }
-
       // Insider activity
-      if (insider && insider.transactionCount && insider.transactionCount > 0 && insider.mspr !== undefined) {
-        reasoning.push(`👔 INSIDER: MSPR ${insider.mspr.toFixed(3)} - ${insider.transactionCount} transactions`);
+      if (insider && insider.transactionCount && insider.transactionCount > 0 && typeof insider.mspr === 'number') {
+        reasoning.push(`👔 INSIDER: MSPR ${safeNumber(insider.mspr, 3)} - ${safeNumber(insider.transactionCount, 0)} transactions`);
       }
-
       // Technical factors
-      if (technical && technical.confidence && technical.confidence > 50 && technical.indicators && technical.indicators.rsi !== undefined && technical.indicators.macd) {
-        reasoning.push(`🔧 TECHNICAL: ${technical.score.toFixed(2)} - RSI:${technical.indicators.rsi.toFixed(1)} MACD:${technical.indicators.macd.macd > technical.indicators.macd.signal ? 'Bull' : 'Bear'}`);
+      if (technical && technical.confidence && technical.confidence > 50 && technical.indicators && typeof technical.indicators.rsi === 'number' && technical.indicators.macd) {
+        reasoning.push(`🔧 TECHNICAL: ${safeNumber(technical.score)} - RSI:${safeNumber(technical.indicators.rsi, 1)} MACD:${(technical.indicators.macd.macd > technical.indicators.macd.signal ? 'Bull' : 'Bear')}`);
       }
-
-      // Fundamental analysis
-      if (fundamental && fundamental.confidence && fundamental.confidence > 50 && fundamental.metrics) {
-        reasoning.push(`💰 FUNDAMENTAL: ${fundamental.score.toFixed(2)} - PE:${fundamental.metrics.pe?.toFixed(1) || 'N/A'} ROE:${fundamental.metrics.roe?.toFixed(1) || 'N/A'}%`);
+      // Fundamental factors
+      if (fundamental && typeof fundamental.score === 'number' && typeof fundamental.metrics === 'object') {
+        reasoning.push(`💰 FUNDAMENTAL: ${safeNumber(fundamental.score)} - PE:${safeNumber(fundamental.metrics.pe)} ROE:${safeNumber(fundamental.metrics.roe)}%`);
       }
-
       // Order flow
-      if (flow && flow.confidence && flow.confidence > 50 && flow.buyPressure !== undefined && flow.sellPressure !== undefined) {
-        reasoning.push(`💹 ORDER FLOW: ${flow.score.toFixed(2)} - Buy:${flow.buyPressure.toFixed(3)} Sell:${flow.sellPressure.toFixed(3)}`);
+      if (flow && typeof flow.score === 'number') {
+        reasoning.push(`💹 ORDER FLOW: ${safeNumber(flow.score)} - Buy:${safeNumber(flow.buyPressure, 3)} Sell:${safeNumber(flow.sellPressure, 3)}`);
       }
-
-      if (composite.confidence !== undefined && composite.validFactors !== undefined) {
-        reasoning.push(`🎯 COMPOSITE CONFIDENCE: ${composite.confidence.toFixed(1)}% (${composite.validFactors} factors)`);
+      // Composite confidence
+      if (composite && typeof composite.confidence === 'number' && typeof composite.factors === 'object') {
+        reasoning.push(`🎯 COMPOSITE CONFIDENCE: ${safeNumber(composite.confidence)}% (${Object.keys(composite.factors).length} factors)`);
       }
-
-      return reasoning;
-    } catch (error) {
-      console.error(`❌ Error generating institutional reasoning for ${symbol}:`, error);
-      return [`🏛️ INSTITUTIONAL ANALYSIS: ${symbol} - Analysis completed with limited reasoning`];
+      // Filter out empty, null, or 'N/A' lines
+      return reasoning.filter(line => line && line.trim() !== '' && line !== 'N/A');
+    } catch (e) {
+      return ['Institutional reasoning unavailable'];
     }
   }
 
@@ -982,6 +973,11 @@ class InstitutionalAnalysisService {
       analysisType: isApiDown ? 'api_down_fallback' : 'fallback'
     };
   }
+}
+
+function safeNumber(val, decimals = 2) {
+  if (typeof val !== 'number' || isNaN(val) || !isFinite(val)) return 'N/A';
+  return val.toFixed(decimals);
 }
 
 export default new InstitutionalAnalysisService(); 

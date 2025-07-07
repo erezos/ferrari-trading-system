@@ -21,6 +21,12 @@ import institutionalAnalysisService from './institutionalAnalysisService.js';
 import axios from 'axios';
 import admin from 'firebase-admin';
 
+// Add at the top of the file, after imports:
+function safeNumber(val, decimals = 2) {
+  if (typeof val !== 'number' || isNaN(val) || !isFinite(val)) return 'N/A';
+  return val.toFixed(decimals);
+}
+
 export class FerrariTradingSystem extends EventEmitter {
   constructor(firebaseServices = null) {
     super();
@@ -1235,11 +1241,12 @@ export class FerrariTradingSystem extends EventEmitter {
     
     // Add institutional analysis to reasoning if available
     if (analysis.institutionalGrade) {
-      enhancedReasoning.push('');
-      enhancedReasoning.push('🏛️ INSTITUTIONAL ANALYSIS:');
-      enhancedReasoning.push(...analysis.institutionalGrade.reasoning);
-      enhancedReasoning.push(`Institutional Confidence: ${analysis.institutionalGrade.confidence.toFixed(1)}%`);
+      // Only add detailed institutional reasoning, not a header or blank
+      enhancedReasoning.push(...(analysis.institutionalGrade.reasoning || []));
+      enhancedReasoning.push(`Institutional Confidence: ${safeNumber(analysis.institutionalGrade.confidence, 1)}%`);
     }
+    // Filter out empty, null, or 'N/A' lines
+    enhancedReasoning = enhancedReasoning.filter(line => line && line.trim() !== '' && line !== 'N/A' && line !== '🏛️ INSTITUTIONAL ANALYSIS:');
     
     // BACKWARD COMPATIBILITY FIX #1: Convert neutral sentiment to bullish/bearish for Flutter app
     let appCompatibleSentiment = analysis.sentiment;
@@ -1436,23 +1443,20 @@ export class FerrariTradingSystem extends EventEmitter {
 
   buildReasoning(symbol, sentiment, strength, priceChange) {
     const reasons = [];
-    
     // Defensive coding: handle undefined sentiment
     const safeSentiment = sentiment || 'neutral';
-    
-    reasons.push(`🏎️ FERRARI SIGNAL: ${safeSentiment.toUpperCase()} momentum detected`);
-    reasons.push(`Strength: ${(strength || 0).toFixed(1)}/5.0 (Premium Quality)`);
-    
-    if (Math.abs(priceChange) > 1) {
-      reasons.push(`Price momentum: ${priceChange > 0 ? '+' : ''}${priceChange.toFixed(2)}%`);
+    // Remove 'Ferrari Signal:' and just show the momentum detected
+    reasons.push(`${safeSentiment.charAt(0).toUpperCase() + safeSentiment.slice(1)} momentum detected`);
+    reasons.push(`Strength: ${safeNumber(strength, 1)}/5.0 (Premium Quality)`);
+    if (typeof priceChange === 'number' && Math.abs(priceChange) > 1) {
+      reasons.push(`Price momentum: ${(priceChange > 0 ? '+' : '') + safeNumber(priceChange, 2)}%`);
     }
-    
-    reasons.push(`Multi-timeframe confirmation across 1m-1h analysis`);
-    reasons.push(`🏛️ Enhanced with institutional-grade hedge fund analysis`);
-    reasons.push(`📊 Multi-factor scoring: momentum, sentiment, insider activity`);
-    reasons.push(`Risk management: Dynamic ATR-based levels`);
-    
-    return reasons;
+    reasons.push('Multi-timeframe confirmation across 1m-1h analysis');
+    reasons.push('🏛️ Enhanced with institutional-grade hedge fund analysis');
+    reasons.push('📊 Multi-factor scoring: momentum, sentiment, insider activity');
+    reasons.push('Risk management: Dynamic ATR-based levels');
+    // Filter out any empty or invalid lines
+    return reasons.filter(line => line && line.trim() !== '' && line !== 'N/A momentum detected');
   }
 
   startSignalEngine() {
