@@ -1699,6 +1699,12 @@ export class FerrariTradingSystem extends EventEmitter {
     }
   }
 
+  // ✅ ICON RANDOMIZATION: Creates visual diversity for better engagement
+  getRandomIcon() {
+    const iconPool = ['📈', '📉', '💎', '⚡', '🚀', '🎯', '💰', '🔥'];
+    return iconPool[Math.floor(Math.random() * iconPool.length)];
+  }
+
   async sendToEligibleUsers(tip, eligibleUsers) {
     if (!this.firebaseReady || !this.messaging) {
       console.log('📱 Test mode: Would send Ferrari notification for:', tip.symbol);
@@ -1708,15 +1714,27 @@ export class FerrariTradingSystem extends EventEmitter {
     try {
       // BACKWARD COMPATIBILITY FIX #3: Use FCM topic broadcasting like old system
       const safeSentiment = tip.sentiment || 'neutral';
-      const sentimentEmoji = safeSentiment === 'bullish' ? '🚀' : safeSentiment === 'bearish' ? '📉' : '⚪';
+      
+      // RANDOMIZED ICON SELECTION: Creates visual diversity and prevents notification fatigue
+      const randomIcon = this.getRandomIcon();
       
       // Generate unique message ID for analytics tracking (matches Firebase Functions)
       const messageId = `ferrari_${tip.symbol}_${tip.timeframe}_${Date.now()}`;
       
+      // ULTRA-SIMPLIFIED FORMAT: Exactly as requested by user
+      const title = `${randomIcon} ${tip.symbol} ${safeSentiment.charAt(0).toUpperCase() + safeSentiment.slice(1)} alert`;
+      const body = `Entry $${tip.entryPrice?.toFixed(2) || 'TBD'}`;
+      
+      // Single optimized template - clean and simple
+      const selectedTemplate = {
+        template: { title, body },
+        templateName: 'simplified'
+      };
+      
       const message = {
         notification: {
-          title: `🏎️ ${tip.symbol} ${safeSentiment.toUpperCase()} Signal`,
-          body: `${sentimentEmoji} ${tip.symbol} ${safeSentiment.toUpperCase()} @ $${tip.entryPrice?.toFixed(2) || 'TBD'}\nStrength: ${(tip.strength || 0).toFixed(1)}/5 | RR: ${tip.riskRewardRatio?.toFixed(2) || 'N/A'}\nTP: $${tip.takeProfit?.toFixed(2) || 'TBD'} | SL: $${tip.stopLoss?.toFixed(2) || 'TBD'}`
+          title: selectedTemplate.template.title,
+          body: selectedTemplate.template.body
         },
         // CRITICAL: All data values must be strings for FCM compatibility
         data: {
@@ -1741,7 +1759,12 @@ export class FerrariTradingSystem extends EventEmitter {
           trackingId: tip.trackingId || '',
           isFerrariSignal: 'true',
           system: 'ferrari_v2',
-          message_id: messageId // For analytics tracking
+          message_id: messageId, // For analytics tracking
+          
+          // ENHANCED ANALYTICS: Track template performance
+          template_used: selectedTemplate.templateName, // Update this when testing different templates
+          potential_gain: potentialGain || '0',
+          strength_stars: strengthStars
         },
         // Use topic broadcasting instead of individual user targeting
         topic: 'trading_tips'
@@ -1749,6 +1772,7 @@ export class FerrariTradingSystem extends EventEmitter {
       
       const response = await this.messaging.send(message);
       console.log(`✅ Ferrari signal sent to topic 'trading_tips' for ${tip.symbol}:`, response);
+      console.log(`📱 Template: ${selectedTemplate.template.title} | ${selectedTemplate.template.body}`);
       
       // ✅ MISSING FEATURE: Notification analytics tracking (matches Firebase Functions)
       await this.logNotificationAnalytics({
@@ -1758,15 +1782,18 @@ export class FerrariTradingSystem extends EventEmitter {
         symbol: tip.symbol,
         sentiment: tip.sentiment,
         timeframe: tip.timeframe,
+        template_used: selectedTemplate.templateName, // Track which template was used
+        potential_gain: potentialGain,
         strength: tip.strength,
-        title: message.notification.title,
-        body: message.notification.body,
+        title: selectedTemplate.template.title,
+        body: selectedTemplate.template.body,
+        timestamp: new Date().toISOString(),
+        server_timestamp: Date.now(),
         target_topic: 'trading_tips',
         platform_config: {
-          system: 'ferrari_trading_system',
-          version: 'v2',
-          analysis_level: tip.analysisLevel || 'technical_grade',
-          is_institutional_grade: !!tip.institutionalGrade
+          notification_style: 'enhanced_ferrari_v2',
+          deep_link_enabled: true,
+          analytics_enabled: true
         }
       });
       
