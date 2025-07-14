@@ -1761,10 +1761,10 @@ export class FerrariTradingSystem extends EventEmitter {
           system: 'ferrari_v2',
           message_id: messageId, // For analytics tracking
           
-          // ENHANCED ANALYTICS: Track template performance
-          template_used: selectedTemplate.templateName, // Update this when testing different templates
-          potential_gain: potentialGain || '0',
-          strength_stars: strengthStars
+          // SIMPLIFIED ANALYTICS: Track template performance
+          template_used: selectedTemplate.templateName, // Simplified template tracking
+          potential_gain: '0', // Removed complex calculations for simplicity
+          strength_stars: Math.min(Math.round(tip.strength || 0), 5).toString() // Simple strength indicator
         },
         // Use topic broadcasting instead of individual user targeting
         topic: 'trading_tips'
