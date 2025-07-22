@@ -1783,7 +1783,7 @@ export class FerrariTradingSystem extends EventEmitter {
         sentiment: tip.sentiment,
         timeframe: tip.timeframe,
         template_used: selectedTemplate.templateName, // Track which template was used
-        potential_gain: potentialGain,
+        potential_gain: '0', // Simplified - using fixed value for consistency
         strength: tip.strength,
         title: selectedTemplate.template.title,
         body: selectedTemplate.template.body,
