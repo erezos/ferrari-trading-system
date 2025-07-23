@@ -33,9 +33,48 @@ export class FerrariTradingSystem extends EventEmitter {
     
     // Core system configuration
     this.config = {
-      // Symbol universe (200+ symbols)
+      // Symbol universe (73 stocks, 10 crypto)
       watchlist: {
-        stocks: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'ADBE', 'CRM', 'SHOP', 'SQ', 'PYPL', 'ROKU', 'ZOOM', 'DOCU', 'TWLO', 'OKTA', 'SNOW', 'PLTR'],
+        stocks: [
+          // Tech Giants & AI
+          'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'AMD', 'INTC', 'IBM',
+          
+          // Software & Cloud
+          'ADBE', 'CRM', 'ORCL', 'NOW', 'WDAY', 'TEAM', 'SPLK', 'MDB', 'NET', 'DDOG',
+          
+          // Fintech & Payments
+          'SQ', 'PYPL', 'V', 'MA', 'JPM', 'BAC', 'GS', 'MS',
+          
+          // Entertainment & Streaming
+          'NFLX', 'DIS', 'SPOT', 'ROKU',
+          
+          // E-commerce & Retail
+          'SHOP', 'EBAY', 'ETSY', 'BABA', 'JD', 'PDD',
+          
+          // Healthcare & Biotech
+          'JNJ', 'PFE', 'UNH', 'ABBV', 'TMO', 'DHR',
+          
+          // Consumer & Retail
+          'WMT', 'COST', 'TGT', 'HD', 'LOW', 'MCD', 'SBUX', 'NKE',
+          
+          // Energy & Industrial
+          'XOM', 'CVX', 'GE', 'CAT', 'BA',
+          
+          // Communication & Collaboration
+          'ZOOM', 'DOCU', 'TWLO', 'OKTA', 'SNOW', 'PLTR', 'ZM',
+          
+          // Additional Tech & Networking
+          'CSCO', 'GOOG',
+          
+          // Automotive & Transportation
+          'F', 'GM', 'UBER',
+          
+          // Consumer Staples
+          'KO', 'PEP', 'PG',
+          
+          // Social Media & Communication
+          'TWTR'
+        ],
         crypto: ['BTC/USD', 'ETH/USD', 'ADA/USD', 'XRP/USD', 'DOT/USD', 'LINK/USD', 'LTC/USD', 'BCH/USD', 'XLM/USD', 'ALGO/USD']
       },
       
@@ -1478,15 +1517,57 @@ export class FerrariTradingSystem extends EventEmitter {
       }
     }, 3600000); // 1 hour
     
-    // Reset daily limits at midnight
-    const dailyInterval = setInterval(() => {
-      if (!this.state.isShuttingDown) {
-        this.resetDailyLimits();
-      }
-    }, 86400000); // 24 hours
+    // ✅ NEW: Reset daily limits 5 minutes after market opens (9:35 AM ET)
+    this.scheduleDailyResetAfterMarketOpen();
     
     this.state.intervals.add(hourlyInterval);
-    this.state.intervals.add(dailyInterval);
+  }
+
+  /**
+   * ✅ SIMPLIFIED: Schedule daily reset to occur 5 minutes after US market opens
+   * Uses 24-hour interval starting at 9:35 AM ET
+   */
+  scheduleDailyResetAfterMarketOpen() {
+    const now = new Date();
+    const est = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    
+    // Calculate delay until next 9:35 AM ET
+    let nextResetTime = new Date(est);
+    nextResetTime.setHours(9, 35, 0, 0); // 9:35 AM ET
+    
+    // If it's already past 9:35 AM today, schedule for tomorrow
+    if (est.getHours() > 9 || (est.getHours() === 9 && est.getMinutes() >= 35)) {
+      nextResetTime.setDate(nextResetTime.getDate() + 1);
+    }
+    
+    // Skip weekends - move to next Monday
+    while (nextResetTime.getDay() === 0 || nextResetTime.getDay() === 6) {
+      nextResetTime.setDate(nextResetTime.getDate() + 1);
+    }
+    
+    const initialDelayMs = nextResetTime.getTime() - now.getTime();
+    
+    console.log(`📅 Daily reset scheduled for: ${nextResetTime.toLocaleString('en-US', { timeZone: 'America/New_York' })} (${Math.round(initialDelayMs / 60000)} minutes from now)`);
+    
+    // Initial delay to start at 9:35 AM ET
+    const initialTimeout = setTimeout(() => {
+      if (!this.state.isShuttingDown) {
+        console.log('🔄 Executing initial daily reset (5 minutes after market open)');
+        this.resetDailyLimits();
+        
+        // Start 24-hour interval from now
+        const dailyInterval = setInterval(() => {
+          if (!this.state.isShuttingDown) {
+            console.log('🔄 Executing daily reset (24-hour interval)');
+            this.resetDailyLimits();
+          }
+        }, 86400000); // 24 hours
+        
+        this.state.intervals.add(dailyInterval);
+      }
+    }, initialDelayMs);
+    
+    this.state.timeouts.add(initialTimeout);
   }
 
   startPerformanceTracking() {
